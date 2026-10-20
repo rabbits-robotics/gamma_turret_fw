@@ -128,25 +128,33 @@ gamma_turret_fw 側に閉じず rabcl に追加していく。
 
 beta に引き続き PlatformIO を使用する。開発は VS Code + PlatformIO 拡張機能で完結させる。✅
 
-<!-- TODO: ESP32-P4 対応の platform / framework 選定、board 定義、sdkconfig -->
-
 | 項目 | 内容 | 状態 |
 |---|---|---|
 | エディタ | VS Code + PlatformIO IDE 拡張機能 | ✅ |
-| ビルドシステム | PlatformIO | ✅ |
-| platform / framework | 未定（ESP32-P4 対応の platform を選定中） | 💭 |
-| ターゲット | M5Stack Stamp-P4（ESP32-P4） | ✅ |
+| platform | [pioarduino](https://github.com/pioarduino/platform-espressif32) 55.03.312（公式の espressif32 は ESP32-P4 未対応） | ✅ |
+| framework | espidf（ESP-IDF 5.5.5）。設計上の制約が sdkconfig で決まるため Arduino は使わない | ✅ |
+| ターゲット | M5Stack Stamp-P4（ESP32-P4 v1.3、16MB Flash）。ボード定義は `boards/m5stack-stamp-p4.json` | ✅ |
+| sdkconfig | `sdkconfig.defaults` が正。生成される `sdkconfig.stamp_p4` は追跡しない | ✅ |
+
+注意点:
+
+- pioarduino の platform は、依存として pioarduino 版の PlatformIO Core（6.2.0）を入れ、公式 Core を置き換える。platform と Core の版は対で使う（beta_main などの STM32 ビルドは Core 6.2.0 でも動く）
+- ビルドは VS Code か PowerShell から行う。Git Bash（MSYS）から実行するとツールのインストーラが「MSys/Mingw は非対応」で止まる
+- 手元の Stamp-P4 は ESP32-P4 **v1.3**。ESP-IDF の既定は rev 3.01 以上向けなので、`sdkconfig.defaults` で rev 3 未満を選んでいる（CPU は 360 MHz）。この設定を変えたときは `.pio/build` を消してクリーンビルドする
 
 ## ビルド・書き込み
 
-<!-- TODO: 書き込み手順 -->
+Stamp-P4 の USB-C を PC につなぐ（USB-Serial-JTAG として COM ポートに見える）。24V を入れたままでも、USB だけでも書き込める。
 
 ```bash
 # ビルド
 pio run
 
-# 書き込み
-pio run --target upload
+# 書き込み（ポートは環境に合わせる）
+pio run --target upload --upload-port COM3
+
+# コンソール（USB-Serial-JTAG、115200 bps）
+pio device monitor --port COM3
 ```
 
 ## ライセンス
