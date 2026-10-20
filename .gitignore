@@ -1,0 +1,10 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# ESP-IDF の生成物（sdkconfig.defaults が正）
+sdkconfig
+sdkconfig.*
+!sdkconfig.defaults
+managed_components/
+dependencies.lock

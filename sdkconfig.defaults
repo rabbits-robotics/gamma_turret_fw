@@ -1,0 +1,22 @@
+# gamma_turret_fw sdkconfig.defaults
+# ハード設計由来の制約（README「ハード設計由来の制約」、docs/2026-08-10-esp32-p4-carrier-design.md）
+
+# フラッシュ 16MB（Stamp-P4）
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_HEADER_FLASHSIZE_UPDATE=y
+
+# チップリビジョン: 手元の Stamp-P4 は ESP32-P4 v1.3（ECO2、esptool flash-id で確認、2026-10-20）
+# IDF の既定（rev 3.01 以上）のままだと起動直後に Illegal instruction で落ちる
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# 当面シングルコア（デュアルコアハング回避、esp-idf #18899）
+CONFIG_FREERTOS_UNICORE=y
+
+# コンソールは USB-Serial-JTAG（Stamp の USB-C）。UART0 へのログ出力は無効化
+# （G37 がデバッグ LED と同居するため、UART0 TX にログが出ると LED が薄光りする）
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# TODO: GPIO26 / GPIO27（USB 2.0 OTG の DP/DM）を Jetson UART に使うため、USB OTG 機能を無効化する
+# TODO: PSRAM（32MB、HEX モード 200MHz）は必要になったら有効化する
