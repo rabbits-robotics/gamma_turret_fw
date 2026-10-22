@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-#include "driver/gpio.h"
+#include <driver/gpio.h>
 
 namespace board
 {

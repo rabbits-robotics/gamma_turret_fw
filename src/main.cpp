@@ -3,13 +3,14 @@
 // 起動時に API の異常系（Start の二重呼び出し、dlc > 8）を 1 回だけ確認し、
 // 5 秒後に 20 フレーム連続送信で受信キューの溢れ（rx_dropped）を確認する。
 
+#include <esp_log.h>
+#include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include "board.hpp"
 #include "can_bus.hpp"
 #include "debug_led.hpp"
-#include "esp_log.h"
-#include "esp_system.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 namespace
 {
