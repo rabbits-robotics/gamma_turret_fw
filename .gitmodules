@@ -1,0 +1,6 @@
+[submodule "components/rabcl"]
+	path = components/rabcl
+	url = https://github.com/rabbits-robotics/rabcl.git
+[submodule "components/rabcl_esp32"]
+	path = components/rabcl_esp32
+	url = https://github.com/rabbits-robotics/rabcl_esp32.git

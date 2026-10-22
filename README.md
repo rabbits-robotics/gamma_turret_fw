@@ -107,11 +107,16 @@ CAN2 はスリップリング経由で車体側の受動分配基板へ届く。
 
 ## 依存ライブラリ
 
-[rabcl](https://github.com/rabbits-robotics/rabcl) を beta と同様にサブモジュールとして使用する。✅
+| ライブラリ | 置き場 | 役割 |
+|---|---|---|
+| [rabcl](https://github.com/rabbits-robotics/rabcl) | `components/rabcl`（submodule） | プロトコル・制御。beta と同じくコミット固定 ✅ |
+| [rabcl_esp32](https://github.com/rabbits-robotics/rabcl_esp32) | `components/rabcl_esp32`（submodule） | ESP-IDF のドライバのラッパー（`CanBus`、`DebugLed`） ✅ |
 
 ```bash
 git submodule update --init
 ```
+
+基板のピン割り当てと定数は `src/board.hpp` にまとめる。周辺機器の扱いは rabcl_esp32 に寄せ、ここには機体の制御・通信だけを置く。
 
 rabcl は Rabbits の共通ライブラリとして継続して育てる方針。gamma で新たに必要になる以下は
 gamma_turret_fw 側に閉じず rabcl に追加していく。
