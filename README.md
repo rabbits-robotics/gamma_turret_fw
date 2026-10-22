@@ -100,6 +100,12 @@ DAMIAO のモータは CAN_ID を 16 未満にする（説明書の推奨）。�
 
 実測（2026-10-22、DM4310 1 台、MIT 指令への応答。`src/main.cpp` の `RATE_SWEEP`）: 100 / 200 / 500 / 1000 / 2000 Hz のいずれも損失 0、応答遅延 259〜277 µs（指令と応答のフレーム 2 枚分）。2 kHz = 4,000 フレーム/秒で CAN2 の仕様と同じ量。両バス同時（合計 7,000 フレーム/秒）はモータが揃ったときに再測定する。
 
+### 脚（DM4310）の実測（2026-10-22、前右脚 1 本、`src/main.cpp` の `HOLD_POSITION`）
+
+- 可動域: 原点（SaveZero、メカスト）から約 1.6 rad。中点 0.8 rad
+- MIT モードで中点保持（指令 250 Hz、esp_timer で等間隔）: kp 3.0 / kd 0.3 では 0.805 rad で静止し、0.27 rad 押すと 0.7 Nm で戻る。kp 1.0 / kd 0.1（現在の値）では押したあと 0.2〜0.3 rad ずれたまま止まる（戻りトルク 0.25 Nm が摩擦と自重に負ける）
+- 脚機構の摩擦 + 自重は出力軸で **0.2〜0.3 Nm** 程度。4 点接地（柔らかい脚）は「弱い kp + 荷重分と摩擦分のフィードフォワード `tff`」で設計する
+
 ### PC（Jetson）との通信
 
 [rabcl](https://github.com/rabbits-robotics/rabcl) の共通プロトコル（`rabcl::protocol`、設計書は rabcl の `docs/superpowers/specs/2026-10-22-robot-protocol-design.md`）を UART2（G26 TX / G27 RX、921600 bps）で流す。

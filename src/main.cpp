@@ -44,10 +44,10 @@ constexpr bool RATE_SWEEP = false;
 constexpr bool HOLD_POSITION = true;
 constexpr float HOLD_TARGET = 0.8f;          // [rad] 可動域の中点
 constexpr float HOLD_RAMP = 0.5f;            // [rad/s] 目標の移動速度
-constexpr float HOLD_KP = 3.0f;              // [Nm/rad]
-constexpr float HOLD_KD = 0.3f;              // [Nm·s/rad]
+constexpr float HOLD_KP = 1.0f;              // [Nm/rad]（柔らかめ。4 点接地のため）
+constexpr float HOLD_KD = 0.1f;              // [Nm·s/rad]
 constexpr float HOLD_TORQUE_LIMIT = 4.0f;    // [Nm] 超えたらゲイン 0 に落とす（DM4310 定格 10 Nm）
-constexpr TickType_t HOLD_PERIOD = pdMS_TO_TICKS(10);  // 100 Hz
+constexpr uint32_t HOLD_PERIOD_US = 4000;    // 指令周期 250 Hz（CAN2 の仕様）。esp_timer で等間隔に送る
 constexpr uint32_t SWEEP_PERIODS_US[] = {10000, 5000, 2000, 1000, 500};  // 100, 200, 500, 1000, 2000 Hz
 constexpr uint32_t SWEEP_DURATION_MS = 5000;
 constexpr size_t SEND_TS_RING = 256;
@@ -222,6 +222,47 @@ void RxTask(void * arg)
   }
 }
 
+// --- 段階 3: 位置保持（esp_timer から 250 Hz で呼ばれる） ---
+
+struct HoldState
+{
+  RateTest * test = nullptr;
+  float target = 0.0f;
+  volatile bool tripped = false;
+  volatile uint32_t sent = 0;
+  volatile uint32_t send_fail = 0;
+};
+
+void HoldTimerCallback(void * arg)
+{
+  auto * h = static_cast<HoldState *>(arg);
+  const float torque = h->test->last.torque_;
+  if (!h->tripped && (torque > HOLD_TORQUE_LIMIT || torque < -HOLD_TORQUE_LIMIT)) {
+    h->tripped = true;
+  }
+  constexpr float ramp_step = HOLD_RAMP * HOLD_PERIOD_US / 1000000.0f;
+  if (h->target < HOLD_TARGET) {
+    h->target = h->target + ramp_step > HOLD_TARGET ? HOLD_TARGET : h->target + ramp_step;
+  } else if (h->target > HOLD_TARGET) {
+    h->target = h->target - ramp_step < HOLD_TARGET ? HOLD_TARGET : h->target - ramp_step;
+  }
+  CanFrame f;
+  f.id = TEST_CAN_ID;
+  f.dlc = 8;
+  if (h->tripped) {
+    std::memcpy(f.data, h->test->cmd, 8);  // ゲイン 0
+  } else {
+    rabcl::Can::PrepareDMMotorMITCmd(
+      h->target, 0.0f, HOLD_KP, HOLD_KD, 0.0f,
+      rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, f.data);
+  }
+  if (h->test->can->Send(f, 0) == ESP_OK) {
+    h->sent = h->sent + 1;
+  } else {
+    h->send_fail = h->send_fail + 1;
+  }
+}
+
 void RunRateSweep(RateTest & t, CanBus & can2)
 {
   esp_timer_handle_t timer = nullptr;
@@ -301,43 +342,41 @@ extern "C" void app_main(void)
   }
 
   if (HOLD_POSITION) {
-    // 段階 3: 目標を今の位置から中点へなめらかに動かして保持。100 Hz で MIT 指令、1 秒ごとにログ
-    float target = test.last.position_;
-    const float ramp_step = HOLD_RAMP * 0.01f;  // 100 Hz
-    ESP_LOGW(TAG, "HOLD start: from %.3f to %.3f rad at %.2f rad/s, kp=%.1f kd=%.2f (torque limit %.1f Nm)",
-             static_cast<double>(target), static_cast<double>(HOLD_TARGET), static_cast<double>(HOLD_RAMP),
-             static_cast<double>(HOLD_KP), static_cast<double>(HOLD_KD), static_cast<double>(HOLD_TORQUE_LIMIT));
-    bool tripped = false;
+    // 段階 3: 目標を今の位置から中点へなめらかに動かして保持。esp_timer から 250 Hz で MIT 指令、1 秒ごとにログ
+    static HoldState hold;
+    hold.test = &test;
+    hold.target = test.last.position_;
+    ESP_LOGW(TAG, "HOLD start: from %.3f to %.3f rad at %.2f rad/s, kp=%.1f kd=%.2f, %lu Hz (torque limit %.1f Nm)",
+             static_cast<double>(hold.target), static_cast<double>(HOLD_TARGET), static_cast<double>(HOLD_RAMP),
+             static_cast<double>(HOLD_KP), static_cast<double>(HOLD_KD),
+             static_cast<unsigned long>(1000000 / HOLD_PERIOD_US), static_cast<double>(HOLD_TORQUE_LIMIT));
+    esp_timer_handle_t hold_timer = nullptr;
+    esp_timer_create_args_t hold_args = {};
+    hold_args.callback = HoldTimerCallback;
+    hold_args.arg = &hold;
+    hold_args.name = "hold";
+    ESP_ERROR_CHECK(esp_timer_create(&hold_args, &hold_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(hold_timer, HOLD_PERIOD_US));
+
+    bool trip_logged = false;
     uint32_t count = 0;
     while (true) {
       ++count;
-      if (!tripped && (test.last.torque_ > HOLD_TORQUE_LIMIT || test.last.torque_ < -HOLD_TORQUE_LIMIT)) {
-        tripped = true;
-        ESP_LOGE(TAG, "HOLD stop: torque %.2f Nm over limit, gains set to 0",
-                 static_cast<double>(test.last.torque_));
+      if (hold.tripped && !trip_logged) {
+        trip_logged = true;
+        ESP_LOGE(TAG, "HOLD stop: torque over limit, gains set to 0");
       }
-      if (target < HOLD_TARGET) {
-        target = target + ramp_step > HOLD_TARGET ? HOLD_TARGET : target + ramp_step;
-      } else if (target > HOLD_TARGET) {
-        target = target - ramp_step < HOLD_TARGET ? HOLD_TARGET : target - ramp_step;
-      }
-      uint8_t hold_cmd[8] = {};
-      rabcl::Can::PrepareDMMotorMITCmd(
-        target, 0.0f, HOLD_KP, HOLD_KD, 0.0f,
-        rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, hold_cmd);
-      SendOrLog(can2, TEST_CAN_ID, tripped ? test.cmd : hold_cmd, tripped ? "MIT zero" : "MIT hold");
-      if (count % 100 == 0) {
-        led3.Toggle();
-        ESP_LOGI(TAG, "HOLD: pos=%.3f (target %.3f) vel=%.3f tor=%.3f Nm t_mos=%.0f t_rotor=%.0f enabled=%d%s",
-                 static_cast<double>(test.last.position_), static_cast<double>(target),
-                 static_cast<double>(test.last.velocity_), static_cast<double>(test.last.torque_),
-                 static_cast<double>(test.last.temperature_mos_), static_cast<double>(test.last.temperature_),
-                 test.enabled ? 1 : 0, tripped ? " TRIPPED" : "");
-      }
-      if (count % 1000 == 0) {
+      led3.Toggle();
+      ESP_LOGI(TAG, "HOLD: pos=%.3f (target %.3f) vel=%.3f tor=%.3f Nm t_mos=%.0f t_rotor=%.0f sent=%lu fail=%lu enabled=%d%s",
+               static_cast<double>(test.last.position_), static_cast<double>(hold.target),
+               static_cast<double>(test.last.velocity_), static_cast<double>(test.last.torque_),
+               static_cast<double>(test.last.temperature_mos_), static_cast<double>(test.last.temperature_),
+               static_cast<unsigned long>(hold.sent), static_cast<unsigned long>(hold.send_fail),
+               test.enabled ? 1 : 0, hold.tripped ? " TRIPPED" : "");
+      if (count % 10 == 0) {
         LogCounters(2, can2);
       }
-      vTaskDelay(HOLD_PERIOD);
+      vTaskDelay(pdMS_TO_TICKS(1000));
     }
   }
 
