@@ -89,6 +89,20 @@ DAMIAO のモータは CAN_ID を 16 未満にする（説明書の推奨）。�
 - 同じバスの中で指令フレーム ID と MST_ID がすべて異なるようにしてある
 - 書き込んだら実フレームの ID をファームのログで確認する（beta の DM3507 では DMTool 上の表示 `0x142` に対して実フレームは `0x42` だった）
 
+### PC（Jetson）との通信
+
+[rabcl](https://github.com/rabbits-robotics/rabcl) の共通プロトコル（`rabcl::protocol`、設計書は rabcl の `docs/superpowers/specs/2026-10-22-robot-protocol-design.md`）を UART2（G26 TX / G27 RX、921600 bps）で流す。
+
+| ファイル | 役割 |
+|---|---|
+| `src/robot.hpp` | 機体定義。関節番号（`robot::Joint`、rabbits_bridge の `config/gamma.yaml` の `joints` と同じ並び）、モード番号、関節とモータ / CAN ID の対応表 |
+| `src/comm.hpp` / `src/comm.cpp` | `Comm`。送信タスク（持っている関節の `JOINT_STATE` を 100 Hz、IMU は値があれば 100 Hz、`INFO` / `SYSTEM` を 1 Hz）と受信タスク（`CHASSIS_VEL` / `JOINT_CMD` / `MODE` を共有状態に置き、制御側が `Get*` で読む） |
+| `src/board.hpp` | `PC_UART_*`（ポート、ピン、ボーレート） |
+
+PC 側は rabbits_bridge の `robot_bridge`（`config/gamma.yaml`）。関節状態の `effort` は DAMIAO がトルク [Nm]、LK が電流 [A]。
+
+実機確認（未実施、Jetson 接続時に行う）: G26 と G27 を短絡したループバックで `rx_frames` が増えること、Jetson（または USB-UART + Python）で `INFO`（version 1、joint_count 11、"gamma"）と `JOINT_STATE` が読めること。G26 / G27 は USB-Serial-JTAG の FS PHY と重なる可能性があるので、通らなければ sdkconfig の USB 設定を疑う。
+
 ### ハード設計由来の制約
 
 - 当面 `CONFIG_FREERTOS_UNICORE=y`（デュアルコアハング回避）

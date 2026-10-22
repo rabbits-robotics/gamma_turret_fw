@@ -5,9 +5,16 @@
 #include <cstdint>
 
 #include <driver/gpio.h>
+#include <driver/uart.h>
 
 namespace board
 {
+
+// PC（Jetson）との UART。rabcl の共通プロトコルで通信する
+constexpr uart_port_t PC_UART_PORT = UART_NUM_2;
+constexpr gpio_num_t PC_UART_TX_PIN = GPIO_NUM_26;  // → Jetson RX（10k プルアップ）
+constexpr gpio_num_t PC_UART_RX_PIN = GPIO_NUM_27;  // ← Jetson TX
+constexpr uint32_t PC_UART_BAUD = 921600;
 
 // デバッグ LED（吸い込み接続。Low で点灯）
 constexpr gpio_num_t DEBUG_LED2_PIN = GPIO_NUM_37;  // D2 黄（UART0 TX と兼用。起動時に ROM ログで一瞬点く）
