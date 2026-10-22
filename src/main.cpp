@@ -37,7 +37,17 @@ constexpr TickType_t SEND_TIMEOUT = pdMS_TO_TICKS(10);
 constexpr uint8_t DM_ERR_ENABLED = 1;  // フィードバック D[0] 上位 4 bit
 
 // 速度掃引試験
-constexpr bool RATE_SWEEP = true;
+constexpr bool RATE_SWEEP = false;
+
+// 段階 3: 可動域（段階 2 の実測 0〜約 1.6 rad）の中点を小さなゲインで保持する。
+// 目標は起動時の位置から HOLD_RAMP で中点へなめらかに動かす
+constexpr bool HOLD_POSITION = true;
+constexpr float HOLD_TARGET = 0.8f;          // [rad] 可動域の中点
+constexpr float HOLD_RAMP = 0.5f;            // [rad/s] 目標の移動速度
+constexpr float HOLD_KP = 3.0f;              // [Nm/rad]
+constexpr float HOLD_KD = 0.3f;              // [Nm·s/rad]
+constexpr float HOLD_TORQUE_LIMIT = 4.0f;    // [Nm] 超えたらゲイン 0 に落とす（DM4310 定格 10 Nm）
+constexpr TickType_t HOLD_PERIOD = pdMS_TO_TICKS(10);  // 100 Hz
 constexpr uint32_t SWEEP_PERIODS_US[] = {10000, 5000, 2000, 1000, 500};  // 100, 200, 500, 1000, 2000 Hz
 constexpr uint32_t SWEEP_DURATION_MS = 5000;
 constexpr size_t SEND_TS_RING = 256;
@@ -290,7 +300,48 @@ extern "C" void app_main(void)
     RunRateSweep(test, can2);
   }
 
-  // 掃引後: 10 Hz のゲイン 0 指令（段階 2 と同じ）
+  if (HOLD_POSITION) {
+    // 段階 3: 目標を今の位置から中点へなめらかに動かして保持。100 Hz で MIT 指令、1 秒ごとにログ
+    float target = test.last.position_;
+    const float ramp_step = HOLD_RAMP * 0.01f;  // 100 Hz
+    ESP_LOGW(TAG, "HOLD start: from %.3f to %.3f rad at %.2f rad/s, kp=%.1f kd=%.2f (torque limit %.1f Nm)",
+             static_cast<double>(target), static_cast<double>(HOLD_TARGET), static_cast<double>(HOLD_RAMP),
+             static_cast<double>(HOLD_KP), static_cast<double>(HOLD_KD), static_cast<double>(HOLD_TORQUE_LIMIT));
+    bool tripped = false;
+    uint32_t count = 0;
+    while (true) {
+      ++count;
+      if (!tripped && (test.last.torque_ > HOLD_TORQUE_LIMIT || test.last.torque_ < -HOLD_TORQUE_LIMIT)) {
+        tripped = true;
+        ESP_LOGE(TAG, "HOLD stop: torque %.2f Nm over limit, gains set to 0",
+                 static_cast<double>(test.last.torque_));
+      }
+      if (target < HOLD_TARGET) {
+        target = target + ramp_step > HOLD_TARGET ? HOLD_TARGET : target + ramp_step;
+      } else if (target > HOLD_TARGET) {
+        target = target - ramp_step < HOLD_TARGET ? HOLD_TARGET : target - ramp_step;
+      }
+      uint8_t hold_cmd[8] = {};
+      rabcl::Can::PrepareDMMotorMITCmd(
+        target, 0.0f, HOLD_KP, HOLD_KD, 0.0f,
+        rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, hold_cmd);
+      SendOrLog(can2, TEST_CAN_ID, tripped ? test.cmd : hold_cmd, tripped ? "MIT zero" : "MIT hold");
+      if (count % 100 == 0) {
+        led3.Toggle();
+        ESP_LOGI(TAG, "HOLD: pos=%.3f (target %.3f) vel=%.3f tor=%.3f Nm t_mos=%.0f t_rotor=%.0f enabled=%d%s",
+                 static_cast<double>(test.last.position_), static_cast<double>(target),
+                 static_cast<double>(test.last.velocity_), static_cast<double>(test.last.torque_),
+                 static_cast<double>(test.last.temperature_mos_), static_cast<double>(test.last.temperature_),
+                 test.enabled ? 1 : 0, tripped ? " TRIPPED" : "");
+      }
+      if (count % 1000 == 0) {
+        LogCounters(2, can2);
+      }
+      vTaskDelay(HOLD_PERIOD);
+    }
+  }
+
+  // 10 Hz のゲイン 0 指令（段階 2 と同じ）
   uint32_t count = 0;
   while (true) {
     ++count;
