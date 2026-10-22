@@ -1,10 +1,11 @@
-// gamma_turret_fw: DM4310 の CAN 試験 + PC との通信（rabcl の共通プロトコル）
+// gamma_turret_fw: 脚 4 本（DM4310、CAN2）の試験 + PC との通信（rabcl の共通プロトコル）
 //
-// 起動後、CAN2 の DM4310（前右脚）に 1 秒ごとにイネーブルを送り、応答（err=1）を待つ。
-// イネーブルできたら通信速度の掃引試験を行う: 指令周期を 100 → 200 → 500 → 1000 → 2000 Hz と変え、
-// 各 5 秒で「送った数 / 送信失敗 / 受けた数 / 応答遅延（µs）」をログに出す。指令はゲイン 0 の MIT 指令
-// なのでトルクは出ない。掃引後は 10 Hz のゲイン 0 指令に戻る。
+// 起動後、4 本の脚に 1 秒ごとにイネーブルを送り、各脚のフィードバック（位置・速度・トルク・温度）を
+// 1 秒ごとにまとめてログする（接続確認）。HOLD_POSITION が true なら、4 本すべてがイネーブルできた
+// あとで各脚の目標を可動域の中点へなめらかに動かし、小さなゲインで保持する。指令は esp_timer から
+// 1 ms ごとに 1 本ずつ回し、各脚 250 Hz（CAN2 の仕様）。トルクが上限を超えた脚はゲイン 0 に落とす。
 // フィードバックは関節状態として Comm に渡す（Comm が JOINT_STATE で PC へ送る）。
+// 通信速度の掃引試験は commit 8a07f66 の main.cpp にある。
 // 制御・通信のロジックはタスクとして src/tasks/ に足していく。
 
 #include <cstring>
@@ -30,32 +31,22 @@ namespace
 {
 
 constexpr const char * TAG = "main";
-constexpr TickType_t LOOP_PERIOD = pdMS_TO_TICKS(100);  // 10 Hz
-constexpr uint32_t ENABLE_PERIOD_LOOPS = 10;            // 1 s ごとにイネーブル
-constexpr uint32_t COUNTER_PERIOD_LOOPS = 100;          // 10 s ごとにカウンタ
 constexpr TickType_t SEND_TIMEOUT = pdMS_TO_TICKS(10);
 constexpr uint8_t DM_ERR_ENABLED = 1;  // フィードバック D[0] 上位 4 bit
 
-// 速度掃引試験
-constexpr bool RATE_SWEEP = false;
+// 脚 4 本
+constexpr size_t LEG_COUNT = 4;
+constexpr robot::Joint LEGS[LEG_COUNT] = {robot::LEG_FR, robot::LEG_FL, robot::LEG_BR, robot::LEG_BL};
+constexpr const char * LEG_NAMES[LEG_COUNT] = {"FR", "FL", "BR", "BL"};
 
-// 段階 3: 可動域（段階 2 の実測 0〜約 1.6 rad）の中点を小さなゲインで保持する。
-// 目標は起動時の位置から HOLD_RAMP で中点へなめらかに動かす
-constexpr bool HOLD_POSITION = true;
-constexpr float HOLD_TARGET = 0.8f;          // [rad] 可動域の中点
-constexpr float HOLD_RAMP = 0.5f;            // [rad/s] 目標の移動速度
+// 位置保持（可動域の実測 0〜約 1.6 rad の中点）。目標は起動時の位置から HOLD_RAMP でなめらかに動かす
+constexpr bool HOLD_POSITION = true;         // false にすると接続確認（イネーブルとログ）だけ
+constexpr float HOLD_TARGET = 0.8f;          // [rad]
+constexpr float HOLD_RAMP = 0.5f;            // [rad/s]
 constexpr float HOLD_KP = 1.0f;              // [Nm/rad]（柔らかめ。4 点接地のため）
 constexpr float HOLD_KD = 0.1f;              // [Nm·s/rad]
-constexpr float HOLD_TORQUE_LIMIT = 4.0f;    // [Nm] 超えたらゲイン 0 に落とす（DM4310 定格 10 Nm）
-constexpr uint32_t HOLD_PERIOD_US = 4000;    // 指令周期 250 Hz（CAN2 の仕様）。esp_timer で等間隔に送る
-constexpr uint32_t SWEEP_PERIODS_US[] = {10000, 5000, 2000, 1000, 500};  // 100, 200, 500, 1000, 2000 Hz
-constexpr uint32_t SWEEP_DURATION_MS = 5000;
-constexpr size_t SEND_TS_RING = 256;
-
-// 試験対象: 前右脚
-constexpr robot::Joint TEST_JOINT = robot::LEG_FR;
-constexpr uint32_t TEST_CAN_ID = robot::JOINTS[TEST_JOINT].can_id;
-constexpr uint32_t TEST_MST_ID = robot::JOINTS[TEST_JOINT].mst_id;
+constexpr float HOLD_TORQUE_LIMIT = 4.0f;    // [Nm] 超えた脚はゲイン 0 に落とす（DM4310 定格 10 Nm）
+constexpr uint32_t CMD_SLOT_US = 1000;       // 1 ms ごとに 1 本 → 各脚 250 Hz
 
 using rabcl_esp32::CanBus;
 using rabcl_esp32::CanBusConfig;
@@ -70,7 +61,7 @@ CanBusConfig MakeCanConfig(gpio_num_t tx, gpio_num_t rx)
   cfg.tx = tx;
   cfg.rx = rx;
   cfg.bitrate = board::CAN_BITRATE;
-  cfg.rx_queue_depth = 64;  // 掃引試験で 2 kHz のフィードバックを取りこぼさないため
+  cfg.rx_queue_depth = 64;
   return cfg;
 }
 
@@ -96,33 +87,6 @@ void LogCounters(int bus, const CanBus & can)
            static_cast<unsigned long>(c.recovered));
 }
 
-rabcl::protocol::JointState ToJointState(const CanFrame & f, rabcl::MotorInfo & m, uint8_t & err)
-{
-  rabcl::Can::ParseDMMotorFeedback(
-    f.data, m, rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, 1.0f);
-  err = rabcl::Can::DMFeedbackError(f.data);
-  rabcl::protocol::JointState js = {};
-  js.id = TEST_JOINT;
-  js.position = m.position_;
-  js.velocity = m.velocity_;
-  js.effort = m.torque_;
-  js.temperature = m.temperature_;
-  js.error = err == DM_ERR_ENABLED ? 0 : err;
-  return js;
-}
-
-void SendOrLog(CanBus & can, uint32_t id, const uint8_t data[8], const char * what)
-{
-  CanFrame f;
-  f.id = id;
-  f.dlc = 8;
-  std::memcpy(f.data, data, 8);
-  const esp_err_t err = can.Send(f, SEND_TIMEOUT);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "send %s (id=0x%03lX) failed: %s", what, static_cast<unsigned long>(id), esp_err_to_name(err));
-  }
-}
-
 void LogPcCommands(const Comm & comm)
 {
   rabcl::protocol::ChassisVel vel;
@@ -130,169 +94,146 @@ void LogPcCommands(const Comm & comm)
     ESP_LOGI(TAG, "PC cmd: chassis vx=%.2f vy=%.2f wz=%.2f",
              static_cast<double>(vel.vx), static_cast<double>(vel.vy), static_cast<double>(vel.wz));
   }
-  rabcl::protocol::JointCmd cmd;
-  if (comm.GetJointCmd(TEST_JOINT, cmd)) {
-    ESP_LOGI(TAG, "PC cmd: leg_fr pos=%.3f vel=%.3f tff=%.3f kp=%.1f kd=%.2f",
-             static_cast<double>(cmd.position), static_cast<double>(cmd.velocity),
-             static_cast<double>(cmd.effort), static_cast<double>(cmd.kp), static_cast<double>(cmd.kd));
-  }
   ESP_LOGI(TAG, "PC link: rx_frames=%lu crc_errors=%lu",
            static_cast<unsigned long>(comm.rx_frames()), static_cast<unsigned long>(comm.crc_errors()));
 }
 
-// --- 速度掃引試験の共有状態 ---
+// --- 脚の共有状態 ---
 
-struct RateTest
+struct LegState
 {
-  CanBus * can = nullptr;
-  Comm * comm = nullptr;
-  uint8_t cmd[8] = {};
-  volatile bool enabled = false;      // DM4310 が err=1 を返した
-  volatile bool measuring = false;    // 掃引中は受信側が遅延を測る
-  volatile uint32_t sent = 0;
-  volatile uint32_t send_fail = 0;
-  volatile uint32_t rx = 0;
-  volatile int64_t lat_sum = 0;
-  volatile int64_t lat_max = 0;
-  volatile int64_t lat_min = 0;
-  int64_t send_ts[SEND_TS_RING] = {};
   rabcl::MotorInfo last = {};
-
-  void ResetStats()
-  {
-    sent = 0;
-    send_fail = 0;
-    rx = 0;
-    lat_sum = 0;
-    lat_max = 0;
-    lat_min = 0;
-  }
-};
-
-// esp_timer から周期的に呼ばれる（esp_timer タスク文脈）
-void SendTimerCallback(void * arg)
-{
-  auto * t = static_cast<RateTest *>(arg);
-  CanFrame f;
-  f.id = TEST_CAN_ID;
-  f.dlc = 8;
-  std::memcpy(f.data, t->cmd, 8);
-  const uint32_t n = t->sent;
-  t->send_ts[n % SEND_TS_RING] = esp_timer_get_time();
-  if (t->can->Send(f, 0) == ESP_OK) {
-    t->sent = n + 1;
-  } else {
-    t->send_fail = t->send_fail + 1;
-  }
-}
-
-// CAN2 の受信を待ち受ける高優先度タスク。フィードバックの遅延を送信時刻との差で測る
-void RxTask(void * arg)
-{
-  auto * t = static_cast<RateTest *>(arg);
-  CanFrame f;
-  uint32_t n_for_comm = 0;
-  while (true) {
-    if (!t->can->Receive(f, portMAX_DELAY)) {
-      continue;
-    }
-    const int64_t now = esp_timer_get_time();
-    if (f.id != TEST_MST_ID) {
-      ESP_LOGI(TAG, "CAN2 rx: id=0x%03lX data=%02X %02X %02X %02X %02X %02X %02X %02X",
-               static_cast<unsigned long>(f.id), f.data[0], f.data[1], f.data[2], f.data[3],
-               f.data[4], f.data[5], f.data[6], f.data[7]);
-      continue;
-    }
-    uint8_t err = 0;
-    const auto js = ToJointState(f, t->last, err);
-    t->enabled = err == DM_ERR_ENABLED;
-    if (t->measuring) {
-      const uint32_t k = t->rx;  // k 番目の応答は k 番目の送信に対応するとみなす
-      t->rx = k + 1;
-      if (k < t->sent) {
-        const int64_t lat = now - t->send_ts[k % SEND_TS_RING];
-        t->lat_sum = t->lat_sum + lat;
-        if (lat > t->lat_max) {t->lat_max = lat;}
-        if (t->lat_min == 0 || lat < t->lat_min) {t->lat_min = lat;}
-      }
-    }
-    if (++n_for_comm % 10 == 0) {
-      t->comm->SetJointState(js);  // PC へは 100 Hz 相当まで
-    }
-  }
-}
-
-// --- 段階 3: 位置保持（esp_timer から 250 Hz で呼ばれる） ---
-
-struct HoldState
-{
-  RateTest * test = nullptr;
+  volatile bool enabled = false;
+  volatile uint8_t err = 0;
+  volatile uint32_t rx = 0;
+  uint32_t rx_for_comm = 0;
   float target = 0.0f;
   volatile bool tripped = false;
   volatile uint32_t sent = 0;
   volatile uint32_t send_fail = 0;
 };
 
-void HoldTimerCallback(void * arg)
+struct Legs
 {
-  auto * h = static_cast<HoldState *>(arg);
-  const float torque = h->test->last.torque_;
-  if (!h->tripped && (torque > HOLD_TORQUE_LIMIT || torque < -HOLD_TORQUE_LIMIT)) {
-    h->tripped = true;
+  CanBus * can = nullptr;
+  Comm * comm = nullptr;
+  uint8_t zero_cmd[8] = {};  // ゲイン 0 の MIT 指令
+  LegState leg[LEG_COUNT];
+  volatile uint32_t next = 0;  // 次に指令を送る脚
+};
+
+int LegIndexForMst(uint32_t id)
+{
+  for (size_t i = 0; i < LEG_COUNT; ++i) {
+    if (robot::JOINTS[LEGS[i]].mst_id == id) {
+      return static_cast<int>(i);
+    }
   }
-  constexpr float ramp_step = HOLD_RAMP * HOLD_PERIOD_US / 1000000.0f;
-  if (h->target < HOLD_TARGET) {
-    h->target = h->target + ramp_step > HOLD_TARGET ? HOLD_TARGET : h->target + ramp_step;
-  } else if (h->target > HOLD_TARGET) {
-    h->target = h->target - ramp_step < HOLD_TARGET ? HOLD_TARGET : h->target - ramp_step;
-  }
+  return -1;
+}
+
+// CAN2 の受信を待ち受けるタスク。各脚のフィードバックを復号して共有状態に置く
+void RxTask(void * arg)
+{
+  auto * legs = static_cast<Legs *>(arg);
   CanFrame f;
-  f.id = TEST_CAN_ID;
-  f.dlc = 8;
-  if (h->tripped) {
-    std::memcpy(f.data, h->test->cmd, 8);  // ゲイン 0
-  } else {
-    rabcl::Can::PrepareDMMotorMITCmd(
-      h->target, 0.0f, HOLD_KP, HOLD_KD, 0.0f,
-      rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, f.data);
-  }
-  if (h->test->can->Send(f, 0) == ESP_OK) {
-    h->sent = h->sent + 1;
-  } else {
-    h->send_fail = h->send_fail + 1;
+  while (true) {
+    if (!legs->can->Receive(f, portMAX_DELAY)) {
+      continue;
+    }
+    const int i = LegIndexForMst(f.id);
+    if (i < 0) {
+      ESP_LOGI(TAG, "CAN2 rx (other): id=0x%03lX data=%02X %02X %02X %02X %02X %02X %02X %02X",
+               static_cast<unsigned long>(f.id), f.data[0], f.data[1], f.data[2], f.data[3],
+               f.data[4], f.data[5], f.data[6], f.data[7]);
+      continue;
+    }
+    LegState & leg = legs->leg[i];
+    rabcl::Can::ParseDMMotorFeedback(
+      f.data, leg.last, rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, 1.0f);
+    leg.err = rabcl::Can::DMFeedbackError(f.data);
+    leg.enabled = leg.err == DM_ERR_ENABLED;
+    leg.rx = leg.rx + 1;
+    if (++leg.rx_for_comm % 10 == 0 || !HOLD_POSITION) {
+      rabcl::protocol::JointState js = {};
+      js.id = LEGS[i];
+      js.position = leg.last.position_;
+      js.velocity = leg.last.velocity_;
+      js.effort = leg.last.torque_;
+      js.temperature = leg.last.temperature_;
+      js.error = leg.enabled ? 0 : leg.err;
+      legs->comm->SetJointState(js);
+    }
   }
 }
 
-void RunRateSweep(RateTest & t, CanBus & can2)
+void SendTo(CanBus & can, robot::Joint joint, const uint8_t data[8], LegState * stat)
 {
-  esp_timer_handle_t timer = nullptr;
-  esp_timer_create_args_t args = {};
-  args.callback = SendTimerCallback;
-  args.arg = &t;
-  args.name = "can_rate";
-  ESP_ERROR_CHECK(esp_timer_create(&args, &timer));
-
-  for (uint32_t period_us : SWEEP_PERIODS_US) {
-    t.ResetStats();
-    t.measuring = true;
-    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, period_us));
-    vTaskDelay(pdMS_TO_TICKS(SWEEP_DURATION_MS));
-    ESP_ERROR_CHECK(esp_timer_stop(timer));
-    vTaskDelay(pdMS_TO_TICKS(100));  // 最後の応答を待つ
-    t.measuring = false;
-
-    const uint32_t sent = t.sent;
-    const uint32_t rx = t.rx;
-    const uint32_t lost = sent > rx ? sent - rx : 0;
-    const double avg = rx > 0 ? static_cast<double>(t.lat_sum) / rx : 0.0;
-    ESP_LOGI(TAG, "RATE %4lu Hz: sent=%lu send_fail=%lu rx=%lu lost=%lu (%.1f%%) latency us: min=%lld avg=%.0f max=%lld",
-             static_cast<unsigned long>(1000000 / period_us), static_cast<unsigned long>(sent),
-             static_cast<unsigned long>(t.send_fail), static_cast<unsigned long>(rx),
-             static_cast<unsigned long>(lost), sent > 0 ? 100.0 * lost / sent : 0.0,
-             static_cast<long long>(t.lat_min), avg, static_cast<long long>(t.lat_max));
-    LogCounters(2, can2);
+  CanFrame f;
+  f.id = robot::JOINTS[joint].can_id;
+  f.dlc = 8;
+  std::memcpy(f.data, data, 8);
+  const esp_err_t err = can.Send(f, stat == nullptr ? SEND_TIMEOUT : 0);
+  if (stat != nullptr) {
+    if (err == ESP_OK) {
+      stat->sent = stat->sent + 1;
+    } else {
+      stat->send_fail = stat->send_fail + 1;
+    }
+  } else if (err != ESP_OK) {
+    ESP_LOGW(TAG, "send to id=0x%03lX failed: %s", static_cast<unsigned long>(f.id), esp_err_to_name(err));
   }
-  ESP_ERROR_CHECK(esp_timer_delete(timer));
+}
+
+// esp_timer から 1 ms ごとに呼ばれ、脚を 1 本ずつ回す（各脚 250 Hz）
+void HoldTimerCallback(void * arg)
+{
+  auto * legs = static_cast<Legs *>(arg);
+  const uint32_t i = legs->next % LEG_COUNT;
+  legs->next = i + 1;
+  LegState & leg = legs->leg[i];
+
+  const float torque = leg.last.torque_;
+  if (!leg.tripped && (torque > HOLD_TORQUE_LIMIT || torque < -HOLD_TORQUE_LIMIT)) {
+    leg.tripped = true;
+  }
+  constexpr float ramp_step = HOLD_RAMP * CMD_SLOT_US * LEG_COUNT / 1000000.0f;
+  if (leg.target < HOLD_TARGET) {
+    leg.target = leg.target + ramp_step > HOLD_TARGET ? HOLD_TARGET : leg.target + ramp_step;
+  } else if (leg.target > HOLD_TARGET) {
+    leg.target = leg.target - ramp_step < HOLD_TARGET ? HOLD_TARGET : leg.target - ramp_step;
+  }
+  uint8_t cmd[8];
+  if (leg.tripped) {
+    std::memcpy(cmd, legs->zero_cmd, 8);
+  } else {
+    rabcl::Can::PrepareDMMotorMITCmd(
+      leg.target, 0.0f, HOLD_KP, HOLD_KD, 0.0f,
+      rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, cmd);
+  }
+  SendTo(*legs->can, LEGS[i], cmd, &leg);
+}
+
+void LogLegs(const Legs & legs, bool holding)
+{
+  for (size_t i = 0; i < LEG_COUNT; ++i) {
+    const LegState & leg = legs.leg[i];
+    if (holding) {
+      ESP_LOGI(TAG, "leg %s: pos=%.3f (target %.3f) vel=%.3f tor=%.3f Nm t_mos=%.0f t_rotor=%.0f rx=%lu sent=%lu fail=%lu%s%s",
+               LEG_NAMES[i], static_cast<double>(leg.last.position_), static_cast<double>(leg.target),
+               static_cast<double>(leg.last.velocity_), static_cast<double>(leg.last.torque_),
+               static_cast<double>(leg.last.temperature_mos_), static_cast<double>(leg.last.temperature_),
+               static_cast<unsigned long>(leg.rx), static_cast<unsigned long>(leg.sent),
+               static_cast<unsigned long>(leg.send_fail), leg.enabled ? "" : " NOT-ENABLED",
+               leg.tripped ? " TRIPPED" : "");
+    } else {
+      ESP_LOGI(TAG, "leg %s: %s pos=%.3f vel=%.3f tor=%.3f Nm t_mos=%.0f t_rotor=%.0f err=%u rx=%lu",
+               LEG_NAMES[i], leg.rx == 0 ? "NO RESPONSE" : (leg.enabled ? "enabled" : "disabled"),
+               static_cast<double>(leg.last.position_), static_cast<double>(leg.last.velocity_),
+               static_cast<double>(leg.last.torque_), static_cast<double>(leg.last.temperature_mos_),
+               static_cast<double>(leg.last.temperature_), leg.err, static_cast<unsigned long>(leg.rx));
+    }
+  }
 }
 
 }  // namespace
@@ -308,8 +249,6 @@ extern "C" void app_main(void)
   CanBus can2(MakeCanConfig(board::CAN2_TX_PIN, board::CAN2_RX_PIN));
   ESP_ERROR_CHECK(can1.Start());
   ESP_ERROR_CHECK(can2.Start());
-  ESP_LOGI(TAG, "DM4310 test on CAN2: CAN_ID=0x%03lX MST_ID=0x%03lX",
-           static_cast<unsigned long>(TEST_CAN_ID), static_cast<unsigned long>(TEST_MST_ID));
 
   Comm comm(MakePcSerialConfig());
   ESP_ERROR_CHECK(comm.Start());
@@ -317,86 +256,69 @@ extern "C" void app_main(void)
            static_cast<int>(board::PC_UART_TX_PIN), static_cast<int>(board::PC_UART_RX_PIN),
            static_cast<unsigned long>(board::PC_UART_BAUD));
 
+  static Legs legs;
+  legs.can = &can2;
+  legs.comm = &comm;
+  rabcl::Can::PrepareDMMotorMITCmd(
+    0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, legs.zero_cmd);
+  for (size_t i = 0; i < LEG_COUNT; ++i) {
+    ESP_LOGI(TAG, "leg %s: CAN_ID=0x%03lX MST_ID=0x%03lX", LEG_NAMES[i],
+             static_cast<unsigned long>(robot::JOINTS[LEGS[i]].can_id),
+             static_cast<unsigned long>(robot::JOINTS[LEGS[i]].mst_id));
+  }
+  xTaskCreate(RxTask, "can2_rx", 4096, &legs, 6, nullptr);
+
   uint8_t enable_cmd[8] = {};
   rabcl::Can::PrepareDMMotorEnable(enable_cmd);
 
-  static RateTest test;
-  test.can = &can2;
-  test.comm = &comm;
-  rabcl::Can::PrepareDMMotorMITCmd(
-    0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-    rabcl::Can::DM4310_PMAX, rabcl::Can::DM4310_VMAX, rabcl::Can::DM4310_TMAX, test.cmd);
-  xTaskCreate(RxTask, "can2_rx", 4096, &test, 6, nullptr);
-
-  // イネーブルできるまで 1 秒ごとに送る
-  while (!test.enabled) {
-    led3.Toggle();
-    SendOrLog(can2, TEST_CAN_ID, enable_cmd, "enable");
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-  ESP_LOGI(TAG, "DM4310 enabled: pos=%.3f rad t_rotor=%.0f",
-           static_cast<double>(test.last.position_), static_cast<double>(test.last.temperature_));
-
-  if (RATE_SWEEP) {
-    RunRateSweep(test, can2);
-  }
-
-  if (HOLD_POSITION) {
-    // 段階 3: 目標を今の位置から中点へなめらかに動かして保持。esp_timer から 250 Hz で MIT 指令、1 秒ごとにログ
-    static HoldState hold;
-    hold.test = &test;
-    hold.target = test.last.position_;
-    ESP_LOGW(TAG, "HOLD start: from %.3f to %.3f rad at %.2f rad/s, kp=%.1f kd=%.2f, %lu Hz (torque limit %.1f Nm)",
-             static_cast<double>(hold.target), static_cast<double>(HOLD_TARGET), static_cast<double>(HOLD_RAMP),
-             static_cast<double>(HOLD_KP), static_cast<double>(HOLD_KD),
-             static_cast<unsigned long>(1000000 / HOLD_PERIOD_US), static_cast<double>(HOLD_TORQUE_LIMIT));
-    esp_timer_handle_t hold_timer = nullptr;
-    esp_timer_create_args_t hold_args = {};
-    hold_args.callback = HoldTimerCallback;
-    hold_args.arg = &hold;
-    hold_args.name = "hold";
-    ESP_ERROR_CHECK(esp_timer_create(&hold_args, &hold_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(hold_timer, HOLD_PERIOD_US));
-
-    bool trip_logged = false;
-    uint32_t count = 0;
-    while (true) {
-      ++count;
-      if (hold.tripped && !trip_logged) {
-        trip_logged = true;
-        ESP_LOGE(TAG, "HOLD stop: torque over limit, gains set to 0");
-      }
-      led3.Toggle();
-      ESP_LOGI(TAG, "HOLD: pos=%.3f (target %.3f) vel=%.3f tor=%.3f Nm t_mos=%.0f t_rotor=%.0f sent=%lu fail=%lu enabled=%d%s",
-               static_cast<double>(test.last.position_), static_cast<double>(hold.target),
-               static_cast<double>(test.last.velocity_), static_cast<double>(test.last.torque_),
-               static_cast<double>(test.last.temperature_mos_), static_cast<double>(test.last.temperature_),
-               static_cast<unsigned long>(hold.sent), static_cast<unsigned long>(hold.send_fail),
-               test.enabled ? 1 : 0, hold.tripped ? " TRIPPED" : "");
-      if (count % 10 == 0) {
-        LogCounters(2, can2);
-      }
-      vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-  }
-
-  // 10 Hz のゲイン 0 指令（段階 2 と同じ）
+  // 接続確認: 4 本すべてがイネーブルできるまで 1 秒ごとにイネーブルを送り、状態をログする
+  bool all_enabled = false;
   uint32_t count = 0;
-  while (true) {
+  while (!all_enabled || !HOLD_POSITION) {
     ++count;
-    SendOrLog(can2, TEST_CAN_ID, test.cmd, "MIT zero");
-    if (count % ENABLE_PERIOD_LOOPS == 0) {
-      led3.Toggle();
-      ESP_LOGI(TAG, "DM4310: pos=%.3f rad vel=%.3f rad/s tor=%.3f Nm t_mos=%.0f t_rotor=%.0f enabled=%d",
-               static_cast<double>(test.last.position_), static_cast<double>(test.last.velocity_),
-               static_cast<double>(test.last.torque_), static_cast<double>(test.last.temperature_mos_),
-               static_cast<double>(test.last.temperature_), test.enabled ? 1 : 0);
+    led3.Toggle();
+    for (size_t i = 0; i < LEG_COUNT; ++i) {
+      SendTo(can2, LEGS[i], enable_cmd, nullptr);
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));  // 応答を待ってからログ
+    LogLegs(legs, false);
+    all_enabled = true;
+    for (size_t i = 0; i < LEG_COUNT; ++i) {
+      all_enabled = all_enabled && legs.leg[i].enabled;
+    }
+    if (count % 10 == 0) {
+      LogCounters(2, can2);
       LogPcCommands(comm);
     }
-    if (count % COUNTER_PERIOD_LOOPS == 0) {
-      LogCounters(1, can1);
+    vTaskDelay(pdMS_TO_TICKS(900));
+  }
+
+  // 位置保持: 各脚の今の位置を目標の初期値にして、1 ms ごとに 1 本ずつ MIT 指令
+  for (size_t i = 0; i < LEG_COUNT; ++i) {
+    legs.leg[i].target = legs.leg[i].last.position_;
+  }
+  ESP_LOGW(TAG, "HOLD start: to %.3f rad at %.2f rad/s, kp=%.1f kd=%.2f, %lu Hz per leg (torque limit %.1f Nm)",
+           static_cast<double>(HOLD_TARGET), static_cast<double>(HOLD_RAMP),
+           static_cast<double>(HOLD_KP), static_cast<double>(HOLD_KD),
+           static_cast<unsigned long>(1000000 / (CMD_SLOT_US * LEG_COUNT)), static_cast<double>(HOLD_TORQUE_LIMIT));
+  esp_timer_handle_t hold_timer = nullptr;
+  esp_timer_create_args_t hold_args = {};
+  hold_args.callback = HoldTimerCallback;
+  hold_args.arg = &legs;
+  hold_args.name = "hold";
+  ESP_ERROR_CHECK(esp_timer_create(&hold_args, &hold_timer));
+  ESP_ERROR_CHECK(esp_timer_start_periodic(hold_timer, CMD_SLOT_US));
+
+  count = 0;
+  while (true) {
+    ++count;
+    led3.Toggle();
+    LogLegs(legs, true);
+    if (count % 10 == 0) {
       LogCounters(2, can2);
+      LogPcCommands(comm);
     }
-    vTaskDelay(LOOP_PERIOD);
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
