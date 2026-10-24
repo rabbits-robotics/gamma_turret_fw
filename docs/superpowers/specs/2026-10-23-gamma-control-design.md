@@ -68,7 +68,7 @@ CAN RX task ──> 各関節のフィードバック（位置・速度・トル
 
 ### 4.2 PC → ファームの指令（プロトコルの追加）
 
-rabcl `protocol/` に **`BODY_POSE`（0x84）** を足す: `height f32`（0〜1、0 = 最低車高）、`roll f32 [rad]`、`pitch f32 [rad]`（12 B）。`MODE` の番号表（gamma）: `load = 0`、`fire = 1`、`speed = 2`（0 = 歩き、1 = 走り）、`chassis = 3`（1 = 無限回転）、`stabilize = 4`（1 = 安定化あり。既定 1）。
+rabcl `protocol/` に **`BODY_POSE`（0x84）** を足す: `height f32`（0〜1、0 = 最低車高）、`roll f32 [rad]`、`pitch f32 [rad]`（12 B）。ロール・ピッチは視点（カメラ）座標系で、ファームが首 Yaw の関節角で車体座標系へ回す。`MODE` の番号表（gamma）: `load = 0`、`fire = 1`、`speed = 2`（0 = 歩き、1 = 走り）、`chassis = 3`（1 = 無限回転）、`stabilize = 4`（1 = 安定化あり。既定 1）。
 
 ROS 2 側: `rabbits_msgs/ReferenceCommand` に `float32 body_height`、`float32 body_roll`、`float32 body_pitch` を足す（`chassis_vel` と同じく常に送る）。rabcl_ros2 `Convert::ReferenceToBodyPose`。bridge は `BODY_POSE` を毎回送る。YAML の `modes` に `stabilize` を足す。
 
@@ -91,25 +91,27 @@ game_client（本番）と gamepad（デバッグ）の割り当て:
 
 すべて機体の値は引数・設定構造体で受け取る。float、`<cmath>` のみ。
 
-**`BodyPosture`** — 車高・ロール・ピッチ → 4 本の脚の目標角
+**`BodyPosture`** — 車高・ロール・ピッチ → 4 本の脚の目標角（脚は円状に等間隔）
 
 ```cpp
 struct BodyPostureConfig
 {
-  float angle_min;   // 使用範囲 [rad]（メカストの余裕込み）
+  float angle_min;       // 使用範囲 [rad]（メカストの余裕込み）
   float angle_max;
-  float roll_gain;   // [rad/rad] 体の傾き 1 rad あたりの脚角の差（左右）
-  float pitch_gain;  // [rad/rad] 同（前後）
+  float tilt_gain;       // [rad/rad] 車体の傾き 1 rad あたり、脚の取り付け位置で脚角に付ける差
+  float leg_azimuth[4];  // 各脚の方位角 [rad]（車体 x 軸から左回り）。gamma: FR −π/4, FL π/4, BR −3π/4, BL 3π/4
 };
 class BodyPosture
 {
   explicit BodyPosture(const BodyPostureConfig &);
-  // height 0〜1 を [angle_min, angle_max] に線形に割り、roll / pitch を左右・前後の脚に逆符号で足して、範囲でクランプ
-  void Solve(float height, float roll, float pitch, float out_fr_fl_br_bl[4]) const;
+  // height 0〜1 を [angle_min, angle_max] に線形に割り、脚 i に
+  //   delta_i = tilt_gain × ( sin(φ_i − yaw_offset) × roll − cos(φ_i − yaw_offset) × pitch )
+  // を足して範囲でクランプ。roll / pitch は視点（カメラ）座標系、yaw_offset は首 Yaw の関節角
+  void Solve(float height, float roll, float pitch, float yaw_offset, float out[4]) const;
 };
 ```
 
-符号: ロール正（右が下がる）→ 右脚（FR, BR）は縮む（角が小さい）、左脚は伸びる。ピッチ正（前が下がる）→ 前脚（FR, FL）は縮む。`roll_gain` / `pitch_gain` は「脚の角度 1 rad で車体がどれだけ傾くか」の逆数で、実機のリンク寸法から決める（最初は実測で合わせる）。
+符号: ロール正（カメラから見て右が下がる）→ 右側の脚は縮む（角が小さい）、左側は伸びる。ピッチ正（前が下がる）→ 前側の脚は縮む。首が横を向いていれば「右・前」はカメラ基準で回る（車体速度と同じ視点基準）。`tilt_gain` は「脚の角度 1 rad で車体がどれだけ傾くか」の逆数で、実機のリンク寸法から決める（最初は実測で合わせる）。
 
 **`LegDamper`** — 脚 1 本の MIT 指令（アクティブダンパ）
 
@@ -144,6 +146,7 @@ struct NeckAngles { float yaw; float pitch; float roll; };  // [rad] 首の関�
 class BodyAttitude
 {
   // IMU の更新があったとき: 車体の向き = IMU の向き − そのときの関節角（3 軸独立の小角度近似）
+  // 注: pitch / roll は厳密には「首 Yaw 軸の先のリンク」の傾き（首ピッチ・ロールの軸が付く座標系）。Gimbal にはこれが正しい値
   void UpdateFromImu(const Attitude & imu, const NeckAngles & joint_at_imu_time);
   // IMU が無いとき（無効、または stabilize = 0）: ヨーだけ指令の旋回速度で積分する（beta の yaw_ff と同じ）。ピッチ・ロールは据え置き
   void UpdateFromChassisRate(float wz, float dt);
@@ -180,20 +183,7 @@ class ViewTarget
 
 積分は **PC 側**（game_client / gamepad が `ViewTarget` を使う。rabcl なので同じコード）。`JOINT_CMD` の `yaw_joint` / `pitch_joint` / `roll_joint` の `position` を「地面に対する目標の向き」と解釈する（設計者の判断）。
 
-**`Differential`** — 論理関節（pitch, roll）と 2 モータの角度の相互変換（首の差動リンク）
-
-```cpp
-struct DifferentialConfig { float pitch_gain_a; float roll_gain_a;   // motor_a = pitch_gain_a * pitch + roll_gain_a * roll
-                            float pitch_gain_b; float roll_gain_b; }; // motor_b = pitch_gain_b * pitch + roll_gain_b * roll
-class Differential
-{
-  explicit Differential(const DifferentialConfig &);
-  void ToMotors(float pitch, float roll, float & motor_a, float & motor_b) const;
-  void ToJoints(float motor_a, float motor_b, float & pitch, float & roll) const;  // 逆変換（行列式 0 なら pitch のみ）
-};
-```
-
-係数は機構が決まるまで仮（典型は a = p + r、b = p − r）。Pitch 軸だけ先に入れる場合は roll_gain を 0 にして motor_b を使わない。フィードバックの pitch / roll（`JOINT_STATE` に載せる論理関節の値）も `ToJoints` で作る。
+**首の Pitch / Roll は保留**: 機構（2 つの DM3507 による差動リンク）が未決定のため、論理関節 ⇔ モータ角の変換（`Differential`）と首 Pitch / Roll の制御は機構が決まってから別の設計で足す。本計画のファームは首 Yaw（LK、`Gimbal` の yaw → `PdGravityFf`）だけを制御し、首 Pitch / Roll のモータには指令を送らない（CAN1 のスロットは空けておく）。
 
 **`CommandWatchdog`** — 指令途絶の監視
 
@@ -206,7 +196,7 @@ class CommandWatchdog
 };
 ```
 
-**`InfiniteRotation`** — 無限回転中の旋回成分（beta の sin の重ね合わせをそのまま移植。`spin_speed_min / max`、周期は引数。`Update(dt)` が旋回速度 [rad/s] を返す）
+無限回転は `SPIN_SPEED`（定数）で常に最高速度で回る（beta の sin 重ね合わせは使わない。実戦では一定の最高速度の方が良かったため）。rabcl に部品は置かない。
 
 既存の `OmniDrive`（車輪の速度分配）と `PdGravityFf`（LK Yaw のトルク PD）はそのまま使う。`interface/can.hpp` に `PrepareDMMotorDisable`（FF FF FF FF FF FF FF FD）を足す。
 
@@ -223,8 +213,8 @@ src/
 └── main.cpp           生成と Start だけ
 ```
 
-- `Controller::Command(joint, now) → CanFrame`: 関節の種別で分岐（車輪: `OmniDrive` + 無限回転 → 速度指令。脚: `BodyPosture` の目標 → `LegDamper` → MIT。首 Pitch / Roll: `Gimbal` の目標（論理関節）→ `Differential::ToMotors` → 2 つの DM3507 に MIT（位置、固定 kp / kd）。首 Yaw: `Gimbal` の目標 → `PdGravityFf` → LK トルク）。
-- 首の 2 つの DM3507 は、プロトコル上の関節番号としては `pitch_joint` / `roll_joint`（論理関節）のまま。`robot.hpp` の関節表で「論理関節 PITCH / ROLL ↔ モータ A / B（CAN ID）」を対応づけ、`JOINT_STATE` の pitch / roll は `Differential::ToJoints` で作った値を載せる。
+- `Controller::Command(joint, now) → CanFrame`: 関節の種別で分岐（車輪: `OmniDrive` + 無限回転 → 速度指令。脚: `BodyPosture` の目標 → `LegDamper` → MIT。首 Pitch / Roll: 保留（機構決定後）。首 Yaw: `Gimbal` の目標 → `PdGravityFf` → LK トルク）。
+- 首の Pitch / Roll はプロトコル上の関節番号（`pitch_joint` / `roll_joint`）だけ確保し、機構が決まるまで指令も `JOINT_STATE` も出さない。
 - 車体速度の基準は **視点（砲塔）基準**: beta と同じく `OmniDrive::CalcVel` の `offset_rot` に首 Yaw の関節角を渡す（WASD は見ている方向に対して効く。無限回転中も狙った向きに走れる）。首 Yaw のフィードバックは CAN RX タスクが共有状態に入れ、CAN2 の計算が読む。
 - 歩き / 走り: PC 側が `speed = 0`（Ctrl）のとき車体速度を `WALK_SCALE` 倍にして送る（操作の値は PC 側）。ファームは `CHASSIS_VEL` を機体定数の上限（`CHASSIS_VEL_MAX`、`CHASSIS_ROT_MAX`）でクランプするだけで、`speed` モードは受け取って保持するが制御には使わない（将来の用途と上りの状態用）。
 - イネーブル: DM モータには起動時と 1 Hz でイネーブルを送る（beta と同じ）。
@@ -239,18 +229,19 @@ src/
 | 定数 | 意味 | 初期値（仮） |
 |---|---|---|
 | `LEG_ANGLE_MIN / MAX` | 脚の使用範囲 [rad] | 0.15 / 1.45 |
-| `LEG_ROLL_GAIN / PITCH_GAIN` | 体の傾き → 脚角の差 [rad/rad] | 1.0 / 1.0（実測で合わせる） |
+| `LEG_TILT_GAIN` | 体の傾き → 脚角の差 [rad/rad] | 1.0（実測で合わせる） |
+| `LEG_AZIMUTH[4]` | 脚の方位角 [rad]（FR, FL, BR, BL） | −π/4, π/4, −3π/4, 3π/4 |
 | `LEG_KP / KD` | 脚の MIT ゲイン | 1.0 / 0.1（実測済みの柔らかさ） |
 | `LEG_LOAD_FF / FRICTION_FF / DEADBAND` | tff [Nm] | 0 / 0.25 / 0.02（組み上がってから取り直す） |
 | `LEG_RAMP_RATE` | 目標の移動速度 [rad/s] | 0.5（しゃがみの速さ。実機で上げる） |
-| `NECK_KP / KD` | DM3507 の MIT ゲイン | beta の PITCH_KP / KD |
+| `NECK_KP / KD` | DM3507 の MIT ゲイン（首 Pitch / Roll を入れるとき） | beta の PITCH_KP / KD |
 | `NECK_DIFFERENTIAL` | 論理関節 → 2 モータの係数 | 仮: a = p + r、b = p − r（機構確定後に差し替え。Pitch のみなら roll 係数 0） |
 | `YAW_PD` | LK Yaw の PD（kp, kd, gravity_ff, max） | beta の yaw_pd |
 | `CAN2_SLOT_US / CAN1_SLOT_US` | 送信間隔 | 500 / 667 |
 | `WATCHDOG_S` | 途絶判定 | 0.5 |
 | `LEG_TORQUE_LIMIT / LEG_TEMP_LIMIT` | 脚の安全策 [Nm] / [℃] | 4.0 / 80 |
 | `CHASSIS_VEL_MAX / CHASSIS_ROT_MAX` | 車体速度の上限 [m/s] / [rad/s] | beta の launch の値 |
-| `SPIN_SPEED_MIN / MAX` | 無限回転の旋回 [rad/s] | beta の値 |
+| `SPIN_SPEED` | 無限回転の旋回 [rad/s]（一定） | 5.0（beta の最高速度） |
 
 ### 4.6 段階と実機確認
 
@@ -266,7 +257,7 @@ src/
 - 首の安定化は 3 軸独立の小角度近似。IMU の方位はジャイロ積分主体（磁気を使わない。設計 B で決める）。
 - 脚の姿勢変換は線形（車高 0〜1 → 角度、ロール・ピッチ → 逆符号のオフセット）。非線形な機構の補正は実機で必要なら足す。
 - 摩擦分の tff は「目標と現在の差の向き」に足す（速度の向きではなく）。
-- 無限回転は beta の sin 重ね合わせを移植。視点の保持は IMU 有効なら `Gimbal`、無効なら beta と同じ送り成分（yaw_ff）で補う。
+- 無限回転は一定の最高速度（`SPIN_SPEED`）。beta の sin 重ね合わせは使わない。視点の保持は IMU 有効なら `Gimbal`、無効なら beta と同じ送り成分（yaw_ff）で補う。
 - 送信スケジューラは rabcl には置かず gamma 側（esp_timer 依存のため）。
 - 首の目標の基準合わせ: `BodyAttitude`（車体の向きの推定）を 1 つ持ち、安定化の有無は推定の更新元（IMU / 旋回速度の積分）の違いだけにする。これで入切や IMU の有効・無効で砲塔が跳ばない（ビルダーチェック 1・5）。
 - 車体速度は視点基準（beta 踏襲、ビルダーチェック 2）。
