@@ -160,16 +160,16 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 
 | 定数 | 値 | 意味 |
 |---|---|---|
-| `LEG_LINKAGE` | Lc 41、α0 60°、Lr 39.75、Lb 60、B1 (−26, −49)、j (0, 17.5)、w (44, −32.5) mm、θmax 90° | 脚の 4 節リンクの寸法（CAD 2026-10-25）。rabbits_description の `config/gamma_linkage.yaml` と対で更新。記号は同リポジトリの `docs/gamma_leg_linkage.svg` |
-| `LEG_DROP_MIN / MAX` | 0.0576 / 0.1038 m（θ 0.15 / 1.42 rad） | 車高 0 / 1 の車輪の下がり。メカスト（0 / 90°）に 0.15 rad の余裕 |
-| `LEG_TILT_RADIUS`、`LEG_AZIMUTH` | 0.170 m、FR −π/4 / FL π/4 / BR −3π/4 / BL 3π/4 | 傾き → 脚の下がりの差（接地点の半径 × 角度） |
+| `LEG_LINKAGE` | Lc 41、α0 60°、Lr 39.75、Lb 60、B1 (−26, −49)、j (0, 17.5)、w (38.3, −44) mm、θmax 90° | 脚の 4 節リンクの寸法（CAD 2026-10-25）。rabbits_description の `config/gamma_linkage.yaml` と対で更新。記号は同リポジトリの `docs/gamma_leg_linkage.svg` |
+| `LEG_DROP_MIN / MAX` | 0.0691 / 0.1153 m（θ 0.15 / 1.42 rad） | 車高 0 / 1 の車輪の下がり。メカスト（0 / 90°）に 0.15 rad の余裕 |
+| `LEG_TILT_RADIUS`、`LEG_AZIMUTH` | 0.164 m、FR −π/4 / FL π/4 / BR −3π/4 / BL 3π/4 | 傾き → 脚の下がりの差（接地点の半径 × 角度） |
 | `LEG_KP / KD` | 1.0 / 0.1 | MIT ゲイン（実測済みの柔らかさ） |
 | `LEG_LOAD_FORCE`、`LEG_FRICTION_FF / DEADBAND` | 0 N、0.25 Nm / 0.02 rad | tff = 荷重 × dd/dθ（姿勢で変わる）± 摩擦分（荷重は組み上がってから取り直す） |
 | `LEG_RAMP_RATE` | 0.5 rad/s | 目標の移動速度（しゃがみの速さ） |
 | `LEG_TORQUE_LIMIT / TEMP_LIMIT` | 4.0 Nm / 80 ℃ | 安全策 |
 | `YAW_ZERO_OFFSET` | 0（**首の配線後に実測**） | エンコーダ 0 と機体前方のずれ [rad]。beta は 240°。車輪の視点基準・脚の傾きの向き・首の目標すべてに効く |
 | `YAW_KP / KD / OUTPUT_MAX` | 5000 / 600 / 2000 | beta の yaw_pd（LK トルク指令値） |
-| `WHEEL_D / BODY_D`、`WHEEL_SIGN` | 0.075 / 0.34 m、−1 | beta の omni_drive。BODY_D は車輪の接地点の配置径（中間の車高、±2% は無視） |
+| `WHEEL_D / BODY_D`、`WHEEL_SIGN` | 0.075 / 0.328 m、−1 | beta の omni_drive。BODY_D は車輪の接地点の配置径（中間の車高、±2% は無視） |
 | `CHASSIS_VEL_MAX / ROT_MAX` | 1.0 m/s / 3.0 rad/s | ファーム側の上限 |
 | `SPIN_SPEED` | 5.0 rad/s | 無限回転の旋回（一定） |
 | `WATCHDOG_S` | 0.5 s | 途絶判定 |
