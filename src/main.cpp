@@ -126,14 +126,28 @@ void LogPc(const Comm & comm, const Controller & controller)
   rabcl::protocol::BodyPose pose;
   const bool has_vel = comm.GetChassisVel(vel);
   const bool has_pose = comm.GetBodyPose(pose);
-  ESP_LOGI(TAG, "PC: rx_frames=%lu crc_errors=%lu %s error_flags=0x%02lX%s | vel %.2f %.2f %.2f | pose h=%.2f r=%.2f p=%.2f",
+  // モード 5 つ（load fire speed chassis stabilize。未受信は -）と首の目標（yaw / pitch の JOINT_CMD。未受信は -）
+  char modes[16];
+  for (int i = 0; i < robot::MODE_COUNT; ++i) {
+    uint8_t v = 0;
+    modes[2 * i] = comm.GetMode(static_cast<uint8_t>(i), v) ? static_cast<char>('0' + (v % 10)) : '-';
+    modes[2 * i + 1] = ' ';
+  }
+  modes[2 * robot::MODE_COUNT - 1] = '\0';
+  rabcl::protocol::JointCmd yaw_cmd;
+  rabcl::protocol::JointCmd pitch_cmd;
+  const bool has_yaw = comm.GetJointCmd(robot::YAW, yaw_cmd);
+  const bool has_pitch = comm.GetJointCmd(robot::PITCH, pitch_cmd);
+  ESP_LOGI(TAG, "PC: rx_frames=%lu crc_errors=%lu %s error_flags=0x%02lX%s | vel %.2f %.2f %.2f | pose h=%.2f r=%.2f p=%.2f | modes %s | neck yaw=%s%.2f pitch=%s%.2f",
            static_cast<unsigned long>(comm.rx_frames()), static_cast<unsigned long>(comm.crc_errors()),
            controller.command_lost() ? "LOST" : "ok", static_cast<unsigned long>(controller.error_flags()),
            controller.motor_power_lost() ? " MOTOR-POWER-LOST" : "",
            has_vel ? static_cast<double>(vel.vx) : 0.0, has_vel ? static_cast<double>(vel.vy) : 0.0,
            has_vel ? static_cast<double>(vel.wz) : 0.0,
            has_pose ? static_cast<double>(pose.height) : 0.0, has_pose ? static_cast<double>(pose.roll) : 0.0,
-           has_pose ? static_cast<double>(pose.pitch) : 0.0);
+           has_pose ? static_cast<double>(pose.pitch) : 0.0, modes,
+           has_yaw ? "" : "-", has_yaw ? static_cast<double>(yaw_cmd.position) : 0.0,
+           has_pitch ? "" : "-", has_pitch ? static_cast<double>(pitch_cmd.position) : 0.0);
 }
 
 }  // namespace

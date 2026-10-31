@@ -122,7 +122,7 @@ DAMIAO のモータは CAN_ID を 16 未満にする（説明書の推奨）。�
 
 PC 側は rabbits_bridge の `robot_bridge`（`config/gamma.yaml`）。関節状態の `effort` は DAMIAO がトルク [Nm]、LK が電流 [A]。
 
-実機確認（未実施、Jetson 接続時に行う）: G26 と G27 を短絡したループバックで `rx_frames` が増えること、Jetson（または USB-UART + Python）で `INFO`（version 1、joint_count 11、"gamma"）と `JOINT_STATE` が読めること。G26 / G27 は USB-Serial-JTAG の FS PHY と重なる可能性があるので、通らなければ sdkconfig の USB 設定を疑う。
+実機確認（2026-11-01、AE-FT234X を PC1 に接続、24V なし）: 上り `INFO`（version 1、joint_count 11、"gamma"）/ `SYSTEM` 1 Hz と `IMU` 100 Hz、下り `BODY_POSE` 100 Hz × 10 秒で 1000 / 1000 受信、CRC エラー 0、送信停止 0.5 s で `LOST`。usbipd（`usbipd bind --busid <FT234X>` を管理者で 1 回 → `usbipd attach --wsl --busid <FT234X>`。WSL 2 ディストロを 1 つ起動しておく）で Dev Container に `/dev/ttyUSB0` として渡し、`device: /dev/ttyUSB0` にした YAML で `robot_bridge` を起動すると `imu/data` が 100 Hz、`reference_command` 100 Hz でファームに 300 フレーム/秒（CHASSIS_VEL + BODY_POSE + MODE）届く。usbipd 経由は到着がまとまるので `imu/data` の間隔は 0〜50 ms でばらつく（平均は 100 Hz）。
 
 ### 制御の構成（2026-10-24、ビルドのみ。実機確認は帰宅後）
 
