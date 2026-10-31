@@ -50,7 +50,7 @@ rabcl の共通プロトコル（下記「PC（Jetson）との通信」）。`CH
 | 車体（CAN_CHASSIS 1〜4） | CAN2（DAMIAO） | DM2325 × 4、オムニ 4 輪（速度制御、`rabcl::OmniDrive`、視点基準 + 無限回転、各 250 Hz） | 🔧 |
 | 脚（CAN_LEG 1〜4） | CAN2（DAMIAO） | DM4310 × 4、各車輪の持ち上げ機構。`BodyPosture` → `LegDamper`（MIT、各 250 Hz） | 🔧 |
 | 射出ローラー × 2 | PWM → ESC | 50Hz サーボパルス。待機 1000µs / 射出 1200µs（beta 実測値を踏襲） | 💭 |
-| 装填 | 半二重 UART | ST3215 サーボ | 💭 |
+| 装填 | 半二重 UART | ST3215 サーボ（rabcl の `St3215`、ステップモード）。試験モードで単体確認中、制御本体への組み込みはこれから | 🔧 |
 
 射出ローラーの ESC は beta と同じく起動時にキャリブレーションを行う（2000µs → 1000µs、各 3 秒待機）。
 射出時のパルス幅 1200µs は beta の実機調整値（2025-03 時点）。gamma でも実機で再調整する。
@@ -208,7 +208,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | CAN | 1 系統（1 Mbps） | **2 系統（CAN1 = 砲塔・ジンバル、CAN2 = 車体）** | ✅ |
 | 砲塔軸 | Yaw + Pitch | **Yaw + Pitch + Roll** | ✅ |
 | 脚 | なし | **DM4310 × 4** | 🔧 |
-| 装填 | 市販 MD + DC モータ（PWM） | **ST3215 サーボ（半二重 UART）** | 💭 |
+| 装填 | 市販 MD + DC モータ（PWM） | **ST3215 サーボ（半二重 UART）**。rabcl の `St3215` + rabcl_esp32 の `HalfDuplexSerial` | 🔧 |
 | IMU | BNO055（I2C、無効化中） | **BNO055（UART）**。rabcl の `BNO055UartDriver` + `ImuTask`。実機で RUNNING・約 100 サンプル/s を確認（2026-11-01） | ✅ |
 | 開発環境 | PlatformIO + stm32pio（STM32Cube） | PlatformIO（ESP32-P4） | 🔧 |
 | 共通ライブラリ | rabcl（サブモジュール） | rabcl（サブモジュール、継続して拡張） | ✅ |
@@ -268,6 +268,62 @@ beta に引き続き PlatformIO を使用する。開発は VS Code + PlatformIO
 - ビルドは VS Code か PowerShell から行う。Git Bash（MSYS）から実行するとツールのインストーラが「MSys/Mingw は非対応」で止まる
 - 手元の Stamp-P4 は ESP32-P4 **v1.3**。ESP-IDF の既定は rev 3.01 以上向けなので、`sdkconfig.defaults` で rev 3 未満を選んでいる（CPU は 360 MHz）。この設定を変えたときは `.pio/build` を消してクリーンビルドする
 
+## ST3215 の試験モード
+
+装填サーボ（ST3215）を単体で動かすための別ビルド。制御本体（CAN、IMU）は起動せず、USB コンソールから 1 行コマンドでサーボを操作する。設計書は rabcl の `docs/superpowers/specs/2026-10-25-st3215-design.md`、測定の目的は `Rabbits/docs/superpowers/specs/2026-07-26-bb-feeder-trigger-wheel-design.md` 5.1 の 4 項目（多回転、到達判定、1 ステップの所要時間、負方向）。
+
+配線は SRV1（XH 3P: 1 = +7.4V、2 = DATA、3 = GND）。サーボ側の 5264 は 1 = DATA（白）、2 = VCC（赤）、3 = GND（黒）。P4 側は G8 TX / G10 RX が 1 kΩ で DATA に合流し、送信は自分のエコーとして戻る（`HalfDuplexSerial` が送信バイト数ぶん読み捨てる）。7.4V は DCDC の戻りの XT30 から入れる（安定化電源 2 A 制限でも可）。24V は不要。
+
+```bash
+pio run -e st3215_test -t upload --upload-port COM3
+pio device monitor --port COM3
+```
+
+| コマンド | 動作 |
+|---|---|
+| `i` | PING と EEPROM / RAM（3〜70）のダンプ。モデル、ID、ボーレート、モード、現在位置など |
+| `m <0-3>` | モード設定（0 位置、1 ホイール、2 PWM、3 ステップ）。EEPROM なので LOCK 0 → 書き → LOCK 1 |
+| `t <0\|1>` | トルク OFF / ON |
+| `s <steps> [speed=1000] [acc=50]` | 1 回の移動。到達（MOVING 0 かつ残り ±5）まで状態を読み続け（約 0.5 ms ごと）、10 ms ごとの残り・速度・MOVING の軌跡と所要時間を出す |
+| `l <n> <steps> <period_ms>` | `s` を `period_ms` ごとに `n` 回（各回の到達を待つ）。最後に受理されたステップ量の合計 |
+| `b <n> <steps> <period_ms> [speed] [acc]` | 連射。到達を待たずに `period_ms` ごとに `n` 回送り、10 ms ごとの残りステップと MOVING を出す（積算の確認） |
+| `p [ms=50]` | 状態を流し続ける。何かキーで止まる |
+| `w <reg> <val>` | 1 バイト書き込み |
+| `r <reg> [len=1]` | 読み出し（16 進。2 バイトなら u16 / s16 も） |
+| `h` | コマンド一覧 |
+
+### サーボの初期設定（1 回だけ。EEPROM に残る）
+
+出荷時は角度制限 0〜4095 が有効で、ステップモードでも絶対位置 4095 で止まる。多回転させるには角度制限を 0 / 0 にする。
+
+```
+w 55 0      # LOCK 解除
+w 9 0       # MIN_ANGLE 下位
+w 10 0      # MIN_ANGLE 上位
+w 11 0      # MAX_ANGLE 下位
+w 12 0      # MAX_ANGLE 上位
+w 55 1      # LOCK
+r 9 4       # 00 00 00 00 を確認
+m 3         # ステップモード
+```
+
+EEPROM を書いた直後は応答が遅れて `FAILED` と出ることがある（値は書けている）。`r` で読み戻して確認する。
+
+### 実測（2026-10-31、7.4V 安定化電源、無負荷）
+
+| 項目 | 結果 |
+|---|---|
+| 多回転 | 角度制限 0/0 で +1024 × 5、±8192（2 回転）とも全量動く |
+| 位置レジスタ（56）の意味 | ステップモードでは「残りステップ数」。絶対位置は位置モードで読む（0〜4095 で巻き戻る） |
+| 到達確認 | MOVING（66）は acc = 0 だと当てにならない（移動中に 0）。残りステップ数 ±5 で判定する |
+| 指令の積算 | 到達を待たず 100 ms 周期で送っても相対ステップは積算される（絶対位置の差で確認） |
+| 171 カウント（15°）の到達 | 1000/50: 約 370 ms、2000/100: 約 280 ms、3000/254: 約 160 ms（行き過ぎ 3）、0/0（最高速）: 約 60 ms（行き過ぎ 22、整定 130 ms） |
+| 負方向 | 正方向と同じ |
+
+詳細は `Rabbits/docs/superpowers/specs/2026-07-26-bb-feeder-trigger-wheel-design.md` 5.1 の実測結果。
+
+`-DGAMMA_ST3215_TEST` で `src/st3215_test.cpp` の `app_main` に切り替わる（`src/main.cpp` の `app_main` は外れる）。通常ビルド（`pio run`）のバイナリには影響しない。
+
 ## ビルド・書き込み
 
 Stamp-P4 の USB-C を PC につなぐ（USB-Serial-JTAG として COM ポートに見える）。24V を入れたままでも、USB だけでも書き込める。
@@ -282,6 +338,8 @@ pio run --target upload --upload-port COM3
 # コンソール（USB-Serial-JTAG、115200 bps）
 pio device monitor --port COM3
 ```
+
+派生環境: `-e st3215_test` は ST3215 の試験モード（後述）。`.pio/build/<env>/` が分かれるので通常ビルドには影響しない。
 
 ## ライセンス
 

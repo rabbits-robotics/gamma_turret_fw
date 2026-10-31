@@ -138,6 +138,7 @@ void LogPc(const Comm & comm, const Controller & controller)
 
 }  // namespace
 
+#ifndef GAMMA_ST3215_TEST  // 試験モード（st3215_test.cpp）のときは通常の app_main を外す
 extern "C" void app_main(void)
 {
   ESP_LOGI(TAG, "gamma_turret_fw start (reset reason: %d)", static_cast<int>(esp_reset_reason()));
@@ -196,3 +197,4 @@ extern "C" void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
+#endif  // GAMMA_ST3215_TEST

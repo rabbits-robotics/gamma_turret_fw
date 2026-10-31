@@ -23,6 +23,12 @@ constexpr gpio_num_t IMU_UART_TX_PIN = GPIO_NUM_12;  // → BNO055 ピン 4（SC
 constexpr gpio_num_t IMU_UART_RX_PIN = GPIO_NUM_15;  // ← BNO055 ピン 3（SDA/T）
 constexpr uint32_t IMU_UART_BAUD = 115200;        // BNO055 の UART は固定
 
+// 装填サーボ（ST3215、SRV1）。半二重: TX は 1 kΩ で Data に合流、RX は 1 kΩ で Data 直結（送信はエコーで戻る）
+constexpr uart_port_t SERVO_UART_PORT = UART_NUM_1;
+constexpr gpio_num_t SERVO_UART_TX_PIN = GPIO_NUM_8;
+constexpr gpio_num_t SERVO_UART_RX_PIN = GPIO_NUM_10;
+constexpr uint32_t SERVO_UART_BAUD = 1000000;  // ST3215 の出荷時
+
 // デバッグ LED（吸い込み接続。Low で点灯）
 constexpr gpio_num_t DEBUG_LED2_PIN = GPIO_NUM_37;  // D2 黄（UART0 TX と兼用。起動時に ROM ログで一瞬点く）
 constexpr gpio_num_t DEBUG_LED3_PIN = GPIO_NUM_38;  // D3 黄緑
