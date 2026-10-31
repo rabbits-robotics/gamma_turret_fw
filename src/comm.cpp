@@ -77,6 +77,12 @@ void Comm::SetImu(const proto::Imu & imu)
   imu_present_ = true;
 }
 
+void Comm::ClearImu()
+{
+  Lock lock(mutex_);
+  imu_present_ = false;
+}
+
 // --- 下り ---
 
 bool Comm::GetJointCmd(uint8_t id, proto::JointCmd & cmd) const
@@ -100,6 +106,22 @@ bool Comm::GetChassisVel(proto::ChassisVel & vel) const
   }
   vel = chassis_vel_;
   return true;
+}
+
+bool Comm::GetBodyPose(proto::BodyPose & pose) const
+{
+  Lock lock(mutex_);
+  if (!body_pose_present_) {
+    return false;
+  }
+  pose = body_pose_;
+  return true;
+}
+
+int64_t Comm::last_rx_time_us() const
+{
+  Lock lock(mutex_);
+  return last_rx_time_us_;
 }
 
 bool Comm::GetMode(uint8_t id, uint8_t & value) const
@@ -152,7 +174,7 @@ void Comm::TxTask()
 
       proto::System system = {};
       system.bus_voltage = 0.0f;  // v1.0 基板に電圧測定なし
-      system.error_flags = 0;
+      system.error_flags = error_flags_;
       system.uptime_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
       Send(tx_buf_, proto::EncodeSystem(system, tx_buf_, sizeof(tx_buf_)));
     }
@@ -221,6 +243,17 @@ void Comm::HandleFrame(proto::Type type, const uint8_t * payload, uint8_t len)
           Lock lock(mutex_);
           chassis_vel_ = vel;
           chassis_vel_present_ = true;
+          last_rx_time_us_ = esp_timer_get_time();
+        }
+        break;
+      }
+    case proto::Type::BODY_POSE: {
+        proto::BodyPose pose;
+        if (proto::DecodeBodyPose(payload, len, pose)) {
+          Lock lock(mutex_);
+          body_pose_ = pose;
+          body_pose_present_ = true;
+          last_rx_time_us_ = esp_timer_get_time();
         }
         break;
       }
@@ -229,6 +262,7 @@ void Comm::HandleFrame(proto::Type type, const uint8_t * payload, uint8_t len)
         uint8_t count = 0;
         if (proto::DecodeJointCmd(payload, len, cmds, proto::MAX_JOINT_CMDS, count)) {
           Lock lock(mutex_);
+          last_rx_time_us_ = esp_timer_get_time();
           for (uint8_t i = 0; i < count; ++i) {
             if (cmds[i].id < robot::JOINT_COUNT) {
               joint_cmd_[cmds[i].id] = cmds[i];
@@ -243,6 +277,7 @@ void Comm::HandleFrame(proto::Type type, const uint8_t * payload, uint8_t len)
         uint8_t count = 0;
         if (proto::DecodeMode(payload, len, modes, sizeof(modes) / sizeof(modes[0]), count)) {
           Lock lock(mutex_);
+          last_rx_time_us_ = esp_timer_get_time();
           for (uint8_t i = 0; i < count; ++i) {
             if (modes[i].id < robot::MODE_COUNT) {
               modes_[modes[i].id] = modes[i].value;

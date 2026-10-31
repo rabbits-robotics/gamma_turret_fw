@@ -1,6 +1,6 @@
 // PC（Jetson）との通信タスク。rabcl の共通プロトコル（rabcl::protocol）を SerialPort で流す。
 //   上り: 持っている関節の状態（JOINT_STATE）を 100 Hz、IMU は値があれば 100 Hz、INFO / SYSTEM を 1 Hz
-//   下り: CHASSIS_VEL / JOINT_CMD / MODE を受けて共有状態に置く（制御側が Get* で読む）
+//   下り: CHASSIS_VEL / BODY_POSE / JOINT_CMD / MODE を受けて共有状態に置く（制御側が Get* で読む）
 #ifndef GAMMA_TURRET_FW__COMM_HPP_
 #define GAMMA_TURRET_FW__COMM_HPP_
 
@@ -30,11 +30,16 @@ public:
   // 上り（制御側が書く）
   void SetJointState(const rabcl::protocol::JointState & state);  // state.id < JOINT_COUNT
   void SetImu(const rabcl::protocol::Imu & imu);
+  void ClearImu();  // IMU が落ちたら呼ぶ。古い値を送り続けない
+  void SetErrorFlags(uint32_t flags) {error_flags_ = flags;}  // SYSTEM に載せる
 
   // 下り（制御側が読む）。起動後に 1 度も受けていなければ false
   bool GetJointCmd(uint8_t id, rabcl::protocol::JointCmd & cmd) const;
   bool GetChassisVel(rabcl::protocol::ChassisVel & vel) const;
+  bool GetBodyPose(rabcl::protocol::BodyPose & pose) const;
   bool GetMode(uint8_t id, uint8_t & value) const;
+  // 下りのフレームを最後に受けた時刻 [us]（esp_timer）。0 = まだ受けていない
+  int64_t last_rx_time_us() const;
 
   uint32_t rx_frames() const {return rx_frames_;}
   uint32_t crc_errors() const {return parser_.crc_errors();}
@@ -73,10 +78,14 @@ private:
   bool joint_cmd_present_[robot::JOINT_COUNT] = {};
   rabcl::protocol::ChassisVel chassis_vel_ = {};
   bool chassis_vel_present_ = false;
+  rabcl::protocol::BodyPose body_pose_ = {};
+  bool body_pose_present_ = false;
   uint8_t modes_[robot::MODE_COUNT] = {};
   bool mode_present_[robot::MODE_COUNT] = {};
 
   volatile uint32_t rx_frames_ = 0;
+  int64_t last_rx_time_us_ = 0;  // mutex_ で守る（32 bit コアでは 64 bit の読み書きが 2 回に分かれる）
+  volatile uint32_t error_flags_ = 0;
   uint8_t tx_buf_[rabcl::protocol::MAX_FRAME];
   uint8_t rx_buf_[RX_CHUNK];
 };
