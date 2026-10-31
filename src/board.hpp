@@ -16,6 +16,13 @@ constexpr gpio_num_t PC_UART_TX_PIN = GPIO_NUM_26;  // → Jetson RX（10k プ�
 constexpr gpio_num_t PC_UART_RX_PIN = GPIO_NUM_27;  // ← Jetson TX
 constexpr uint32_t PC_UART_BAUD = 921600;
 
+// IMU（BNO055、基板直載せ、UART モード = J3 接続・J4 接続・J5 除去・J2 開放）。モジュールの送信 → G15、受信 ← G12（10k プルアップ）
+// ⚠ J3 と J5 を同時に閉じると VOUT（2.8 V）が GND に短絡して LP5907 が発熱する（2026-11-01 に実測。モジュール 2 台がこれで止まった）
+constexpr uart_port_t IMU_UART_PORT = UART_NUM_3;
+constexpr gpio_num_t IMU_UART_TX_PIN = GPIO_NUM_12;  // → BNO055 ピン 4（SCL/R）
+constexpr gpio_num_t IMU_UART_RX_PIN = GPIO_NUM_15;  // ← BNO055 ピン 3（SDA/T）
+constexpr uint32_t IMU_UART_BAUD = 115200;        // BNO055 の UART は固定
+
 // デバッグ LED（吸い込み接続。Low で点灯）
 constexpr gpio_num_t DEBUG_LED2_PIN = GPIO_NUM_37;  // D2 黄（UART0 TX と兼用。起動時に ROM ログで一瞬点く）
 constexpr gpio_num_t DEBUG_LED3_PIN = GPIO_NUM_38;  // D3 黄緑

@@ -1,7 +1,7 @@
 // gamma_turret_fw: 制御本体（設計書 docs/superpowers/specs/2026-10-23-gamma-control-design.md）
 //
 //   Comm          PC（Jetson）と rabcl の共通プロトコルで通信（指令の受け口、関節状態の送信）
-//   ImuStore      IMU の共有状態。初期化できるまで valid = false（書き手の ImuTask は次のコミットで）
+//   ImuStore      IMU の共有状態。ImuTask（BNO055、UART3、100 Hz）が書く。初期化できるまで valid = false
 //   Controller    指令・フィードバック・IMU から関節ごとの CAN 指令を作る
 //   CanScheduler  esp_timer で等間隔に 1 関節ずつ送る（CAN2: 0.5 ms × 8 = 各 250 Hz、CAN1: 0.67 ms × 3 = 各 500 Hz）
 //   CanReceiver   バスごとの受信タスク。フィードバックを Controller と Comm に渡す
@@ -24,6 +24,7 @@
 #include "comm.hpp"
 #include "control.hpp"
 #include "imu.hpp"
+#include "imu_task.hpp"
 #include "robot.hpp"
 
 namespace
@@ -106,6 +107,19 @@ void LogYaw(const Controller & controller)
            static_cast<double>(s.info.current_), static_cast<unsigned long>(s.rx));
 }
 
+void LogImu(const ImuTask & task, const ImuStore & store)
+{
+  const auto c = task.counters();
+  const ImuState s = store.Get();
+  ESP_LOGI(TAG, "IMU: %s %s samples=%lu errors=%lu reinits=%lu calib=0x%02X | yaw=%.3f pitch=%.3f roll=%.3f | gyro %.2f %.2f %.2f",
+           rabcl::BNO055Sequencer::StateName(c.state), s.valid ? "valid" : "INVALID",
+           static_cast<unsigned long>(c.samples),
+           static_cast<unsigned long>(c.errors), static_cast<unsigned long>(c.reinits), c.calib_stat,
+           static_cast<double>(s.attitude.yaw), static_cast<double>(s.attitude.pitch),
+           static_cast<double>(s.attitude.roll),
+           static_cast<double>(s.gyro[0]), static_cast<double>(s.gyro[1]), static_cast<double>(s.gyro[2]));
+}
+
 void LogPc(const Comm & comm, const Controller & controller)
 {
   rabcl::protocol::ChassisVel vel;
@@ -144,6 +158,12 @@ extern "C" void app_main(void)
 
   static ImuStore imu;
   static Controller controller(comm, imu);
+  static ImuTask imu_task(imu, comm, controller);
+  if (imu_task.Start() != ESP_OK) {
+    ESP_LOGE(TAG, "IMU task failed to start; running without IMU");  // IMU のためにモータの起動を止めない
+  }
+  ESP_LOGI(TAG, "IMU (BNO055) on UART%d: tx=G%d rx=G%d", static_cast<int>(board::IMU_UART_PORT),
+           static_cast<int>(board::IMU_UART_TX_PIN), static_cast<int>(board::IMU_UART_RX_PIN));
 
   static CanReceiver rx1(can1, robot::Bus::CAN1, controller, comm, "can1_rx");
   static CanReceiver rx2(can2, robot::Bus::CAN2, controller, comm, "can2_rx");
@@ -172,6 +192,7 @@ extern "C" void app_main(void)
     LogBus("CAN1", can1, sched1, rx1);
     LogBus("CAN2", can2, sched2, rx2);
     LogPc(comm, controller);
+    LogImu(imu_task, imu);
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }

@@ -33,7 +33,7 @@ CAN2 はスリップリング経由で車体側の受動分配基板へ届く。
 | CAN2 | TWAI、MCP2562FD | 車体系（車輪 4 輪、脚 4 本） | ✅ |
 | 射出 ESC × 2 | LEDC（PWM）、50Hz | 待機 1000µs / 射出 1200µs | ✅ |
 | 装填サーボ | UART（半二重、1kΩ 合流） | ST3215 | ✅ |
-| IMU | UART | BNO055（基板直載せ）。`ImuTask`（rabcl の `BNO055UartDriver`）、100 Hz | 🔧 |
+| IMU | UART | BNO055（基板直載せ、UART モード）。`ImuTask`（rabcl の `BNO055UartDriver`）、100 Hz。実機確認済み（2026-11-01） | ✅ |
 | HMI | GPIO | LED × 6（電源 / デバッグ / アクティビティ）、BOOT / RESET タクト SW | ✅ |
 
 ### 受信: Jetson からの指令
@@ -139,7 +139,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 |---|---|
 | `src/robot.hpp` | 関節 / モード番号、関節とモータの対応、送信の並び（`CAN2_ORDER` / `CAN1_ORDER`）、制御定数 |
 | `src/imu.hpp` | `ImuStore`（IMU の共有状態: 姿勢、角速度、有効フラグ、計測時刻、計測時の首 Yaw 角） |
-| `src/imu_task.hpp` / `.cpp` | `ImuTask`。BNO055 を UART3 で読む FreeRTOS タスク。rabcl の `BNO055UartDriver`（起動シーケンス・100 Hz 読み・再初期化はバス非依存の `BNO055Sequencer`）を `SerialPort` でつなぎ、「要求の直前に受信バッファを空にする → 要求 → 応答の長さだけブロック読み（約 2 ms）→ 10 ms 境界で次」で回す（読み周期はこのタスクの tick だけが持つ）。起動時に待たない（`valid = false` で始まり、初期化できた時点から使う）。落ちたら `valid = false` と `Comm::ClearImu` |
+| `src/imu_task.hpp` / `.cpp` | `ImuTask`。BNO055 を UART3 で読む FreeRTOS タスク。rabcl の `BNO055UartDriver`（起動シーケンス・100 Hz 読み・再初期化はバス非依存の `BNO055Sequencer`）を `SerialPort` でつなぎ、「要求の直前に受信バッファを空にする → 要求 → ヘッダ 2 バイトを読み、BB ならその長さ分を追加で読む（約 2 ms）→ 10 ms 境界で次」で回す（読み周期はこのタスクの tick だけが持つ）。BNO055 の融合更新と読みが重なると `EE 07`（bus over run）が返るので、その直後だけは 10 ms 境界を待たず即再送して位相をずらす（実機では毎秒 3〜4 回、連続はしない）。起動時に待たない（`valid = false` で始まり、初期化できた時点から使う）。落ちたら `valid = false` と `Comm::ClearImu` |
 | `src/control.hpp` / `.cpp` | `Controller`。車輪 = `OmniDrive`（視点基準、首 Yaw の角度で回す）+ 無限回転 `SPIN_SPEED`。脚 = `BodyPosture` → `LegDamper` → MIT。首 Yaw = `Gimbal`（視点目標 − 胴体の向き `BodyAttitude`）→ `PdGravityFf` → LK トルク。`Tick`（100 Hz）が Comm の指令を取り込み、`CommandWatchdog` と `BodyAttitude` を更新 |
 | `src/can_sched.hpp` / `.cpp` | `CanScheduler`（esp_timer で 1 スロット 1 関節。DM には 1 Hz でイネーブルを 1 スロット充てる）、`CanReceiver`（受信タスク。フィードバック ID → 関節 → `Controller::SetFeedback`、`Comm::SetJointState` は 4 回に 1 回） |
 | `src/main.cpp` | 生成と Start、1 秒ごとのログ |
@@ -174,8 +174,9 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `SPIN_SPEED` | 5.0 rad/s | 無限回転の旋回（一定） |
 | `WATCHDOG_S` | 0.5 s | 途絶判定 |
 | `FEEDBACK_TIMEOUT_MS` | 200 ms | モータのフィードバック途絶 = 電源断の判定 |
-| `IMU_AXIS_MAP_CONFIG / SIGN` | 0x24 / 0x00（**実機で確定**） | BNO055 の軸入れ替え。本番（部品面が後ろ・USB-C が左）と試験（部品面が上・USB-C が右）で違う |
-| `IMU_PITCH_SIGN / IMU_ROLL_SIGN` | +1 / +1（**実機で確定**） | BNO055 のオイラー角 → REP-103 |
+| `IMU_AXIS_MAP_CONFIG / SIGN` | 0x24 / 0x00（試験向きで確定、2026-11-01） | BNO055 の軸入れ替え。本番（部品面が後ろ・USB-C が左）に載せたら再確定。試験向き（部品面が上・USB-C が右・USB-C を右にして座ったときの奥が前）からの計算では 0x06 / 0x07 の見込み |
+| `IMU_PITCH_SIGN / IMU_ROLL_SIGN` | +1 / **−1**（試験向きで確定） | BNO055 のオイラー角 → REP-103。前を下げて pitch +0.25 rad、右を下げて roll +0.23 rad（符号反転後） |
+| `IMU_GYRO_INDEX / SIGN` | {1, 0, 2} / {+1, +1, +1}（試験向きで確定） | ジャイロ → 機体座標。BNO055 の X 軸が左右、Y 軸が前後（heading は +Y 基準）なので x / y を入れ替える |
 | `IMU_OPERATION_MODE` | 0x08 | 融合モード（IMU、磁気なし） |
 | `IMU_USE_EXTERNAL_CRYSTAL` | true | AE-BNO055-BO は 32.768 kHz 水晶（XT1、FC-135）実装済み（秋月説明書の回路図で確認、2026-10-24）。水晶の無いモジュールに替えたら false |
 | `IMU_SAMPLE_PERIOD_MS / RESPONSE_TIMEOUT_MS / BOOT_WAIT_MS` | 10 / 20 / 700 | 読み周期、応答待ち、起動 / リセット後の待ち |
@@ -188,7 +189,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 3. 指令を止めて 0.5 s 後に途絶の扱いになり、脚が据え置き、`error_flags` の bit5 が立つこと。再開で復帰
 4. 1 本の脚を手で押してトルク上限を超えさせ、その脚だけディセーブル（LED が変わる）になること
 5. 起動ログで esp_timer タスクのスタック残量を確認する（`CanScheduler` のコールバックで `OmniDrive::CalcVel` の double 演算が走る。足りなければ `CONFIG_ESP_TIMER_TASK_STACK_SIZE` を上げる）
-6. **IMU（BNO055 のモジュールが届いたら）**: (a) 配線とジャンパ（J3 接続、J5 除去）を確認し、挿す前にジャンパ線給電で VOUT 2.8 V を確認（前回の不良の教訓）。(b) 起動ログの `IMU:` が `RUNNING` になり `samples` が毎秒約 100 増えること（`errors` は連続エラー数、`reinits` はソフトリセット回数）。(c) 静止させて `calib` の bit5:4（ジャイロ）が 3 になるまでの時間。(d) 軸: カメラを前に向けた状態から、カメラを下に向ける → `pitch` が正、機体を右に傾ける → `roll` が正、上から見て左に回す → `yaw` が増える。合わなければ `IMU_AXIS_MAP_*` と `IMU_*_SIGN` を直す（本番の取り付け向きでも再確認）。(e) 一定速度で回して `gyro[2]` と yaw の変化率が一致（900 LSB/(rad/s) の裏取り）。ピッチ・ロールも振って `gyro[0]` / `gyro[1]` と roll / pitch の変化率の符号が合うこと（軸入れ替えで右手系が崩れていないか）。(f) 無限回転中に首が視点を保つ（`Gimbal` の経路）。(g) 起動ログで `SET_CLOCK` を抜けて `RUNNING` に進むこと（外付け水晶 true で止まるなら水晶の実装か CLK_SEL の扱いを疑う）。(h) 首を回したまま IMU を抜き差し（または安定化を切 → 入）しても砲塔が跳ばない（`AnchorImu` の経路）
+6. **IMU（BNO055 のモジュール）**: (a) ジャンパは UART モード（J3 接続・J4 接続・**J5 を完全に除去**・J2 開放）。**J3 と J5 が同時に閉じていると VOUT（2.8 V）が GND に短絡して LP5907 が発熱する**（2026-11-01 に実測。2 台がこれで止まった）。盛る前に無電源で VOUT（ピン 8）–GND が高抵抗であることを確認し、挿す前にジャンパ線給電で VOUT 2.8 V と発熱なしを確認。(b) 起動ログの `IMU:` が `RUNNING` になり `samples` が毎秒約 100 増えること（`errors` は連続エラー数、`reinits` はソフトリセット回数）— **2026-11-01 OK**（毎秒 99、60 秒で再初期化 0）。(c) 静止させて `calib` の bit5:4（ジャイロ）が 3 になるまでの時間 — **OK**（起動後数秒）。(d) 軸: カメラを前に向けた状態から、カメラを下に向ける → `pitch` が正、機体を右に傾ける → `roll` が正、上から見て左に回す → `yaw` が増える。合わなければ `IMU_AXIS_MAP_*` と `IMU_*_SIGN` を直す — **試験向きで OK**（`IMU_ROLL_SIGN = −1` に変更。本番の取り付け向きで再確認）。(e) 一定速度で回して `gyro[2]` と yaw の変化率が一致。ピッチ・ロールも振って `gyro[0]` / `gyro[1]` と roll / pitch の変化率の符号が合うこと — **試験向きで OK**（BNO055 の X 軸が左右、Y 軸が前後だったので `IMU_GYRO_INDEX` で入れ替え。時計回りで gyro[2] −0.7 rad/s、yaw も減少）。(f) 無限回転中に首が視点を保つ（`Gimbal` の経路）。(g) 起動ログで `SET_CLOCK` を抜けて `RUNNING` に進むこと（外付け水晶 true で止まるなら水晶の実装か CLK_SEL の扱いを疑う）。(h) 首を回したまま IMU を抜き差し（または安定化を切 → 入）しても砲塔が跳ばない（`AnchorImu` の経路）
 7. **24V 断 → 復電**（Jetson または PC の USB で P4 を給電したまま）: 24V を切ると 1 秒以内にログに `NO-FEEDBACK` と `MOTOR-POWER-LOST` が出て指令が止まり、戻すと脚が今の位置から静かに指令の姿勢へ戻ること（跳ねない）。`error_flags` bit6 が立って消えること
 8. 必要なゲイン・`LEG_RAMP_RATE`・tff の値をここに記録し、`robot.hpp` を更新してからコミット
 
@@ -208,7 +209,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | 砲塔軸 | Yaw + Pitch | **Yaw + Pitch + Roll** | ✅ |
 | 脚 | なし | **DM4310 × 4** | 🔧 |
 | 装填 | 市販 MD + DC モータ（PWM） | **ST3215 サーボ（半二重 UART）** | 💭 |
-| IMU | BNO055（I2C、無効化中） | **BNO055（UART）**。rabcl の `BNO055UartDriver` + `ImuTask` | 🔧 |
+| IMU | BNO055（I2C、無効化中） | **BNO055（UART）**。rabcl の `BNO055UartDriver` + `ImuTask`。実機で RUNNING・約 100 サンプル/s を確認（2026-11-01） | ✅ |
 | 開発環境 | PlatformIO + stm32pio（STM32Cube） | PlatformIO（ESP32-P4） | 🔧 |
 | 共通ライブラリ | rabcl（サブモジュール） | rabcl（サブモジュール、継続して拡張） | ✅ |
 
@@ -246,7 +247,7 @@ gamma_turret_fw 側に閉じず rabcl に追加していく。
 | 既存資産 | UART パケット定義、CAN（LK MHF5005 / DAMIAO DM2325・DM3507 MIT）、`OmniDrive`、`PdGravityFf`、BNO055 | ✅ |
 | DM4310 | 脚モータ（DAMIAO）。既存の DAMIAO 実装を流用できる見込み | 💭 |
 | ST3215 | 装填サーボ（半二重 UART プロトコル） | 💭 |
-| BNO055 UART | rabcl に UART フレーム / バス非依存の状態機械 / UART・I2C 層を追加（2026-10-24）。実機確認待ち | 🔧 |
+| BNO055 UART | rabcl に UART フレーム / バス非依存の状態機械 / UART・I2C 層を追加（2026-10-24）。実機で UART の RUNNING・約 100 サンプル/s を確認（2026-11-01）。bus over run（毎秒 3〜4 回）は即再送で吸収し、60 秒で再初期化 0 回 | ✅ |
 | ESP32 向け HAL 層 | TWAI（CAN）/ UART / LEDC（PWM）の抽象化。rabcl 側はプラットフォーム非依存に保つ | 💭 |
 
 ## 開発環境
