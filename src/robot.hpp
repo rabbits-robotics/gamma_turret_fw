@@ -139,8 +139,8 @@ constexpr float LEG_KP = 1.0f;           // [Nm/rad]
 constexpr float LEG_KD = 0.1f;           // [Nm·s/rad]
 constexpr float LEG_LOAD_FORCE = 0.0f;   // [N] 脚 1 本の荷重（車体質量の分担。組み上がってから取り直す）。トルクは × dd/dθ
 constexpr float LEG_FRICTION_FF = 0.25f;  // [Nm] 摩擦分（脚モータ単体の実測 0.2〜0.3）
-constexpr float LEG_DEADBAND = 0.02f;    // [rad]
-constexpr float LEG_RAMP_RATE = 0.5f;    // [rad/s] 目標の移動速度（しゃがみの速さ）
+constexpr float LEG_FRICTION_BAND = 0.04f;  // [rad] 摩擦分を差に比例させる幅（局所の傾き 0.25 / 0.04 ≈ 6 Nm/rad）。縁の振動対策（2026-11-01）
+constexpr float LEG_RAMP_RATE = 4.0f;    // [rad/s] 目標の移動速度（しゃがみ 0.17 s）。0.5 / 1.0 / 2.0 は実機で「遅い」（2026-11-01）
 constexpr float LEG_TORQUE_LIMIT = 4.0f;  // [Nm] 超えたらその脚をディセーブル（DM4310 定格 10 Nm）
 constexpr float LEG_TEMP_LIMIT = 80.0f;   // [℃] ロータ温度
 

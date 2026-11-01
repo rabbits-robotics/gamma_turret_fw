@@ -23,7 +23,7 @@ private:
 };
 
 constexpr rabcl::LegDamperConfig LEG_CONFIG = {
-  robot::LEG_KP, robot::LEG_KD, robot::LEG_FRICTION_FF, robot::LEG_DEADBAND, robot::LEG_RAMP_RATE};
+  robot::LEG_KP, robot::LEG_KD, robot::LEG_FRICTION_FF, robot::LEG_FRICTION_BAND, robot::LEG_RAMP_RATE};
 
 void FillFrame(uint32_t id, const uint8_t data[8], rabcl_esp32::CanFrame & out)
 {

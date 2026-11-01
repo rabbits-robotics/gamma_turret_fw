@@ -122,7 +122,7 @@ struct LegDamperConfig
   float kd;
   float load_ff;      // [Nm] 荷重分（車体質量 / 4 の分担をレバーで換算。組み上がってから実測）
   float friction_ff;  // [Nm] 摩擦分（目標と現在の差の向きに足す）
-  float deadband;     // [rad] この範囲内では摩擦分を足さない
+  float friction_band;  // [rad] 差がこの幅の中では摩擦分を差に比例させる（2026-11-01 に deadband から変更。境界で出力が跳ばないように）
   float ramp_rate;    // [rad/s] 目標の移動速度の上限（しゃがみの速さ）
 };
 struct MitCommand { float pos; float vel; float kp; float kd; float tff; };
@@ -136,7 +136,7 @@ class LegDamper
 };
 ```
 
-tff = load_ff + friction_ff × sign(ramped_target − angle)（|差| > deadband のとき）。安全停止や途絶時は呼び出し側が target を据え置くだけ（脱力しない）。
+tff = load_ff + friction_ff × clamp((ramped_target − angle) / friction_band, −1, +1)（2026-11-01 まで sign と不感帯だったが、差が不感帯の縁に乗った脚が 15 Hz で小さく振動したので連続にした）。安全停止や途絶時は呼び出し側が target を据え置くだけ（脱力しない）。
 
 **`BodyAttitude`** — 車体（首の根元）の地面に対する向きの推定
 
@@ -232,7 +232,7 @@ src/
 | `LEG_LINKAGE`、`LEG_DROP_MIN / MAX`、`LEG_TILT_RADIUS` | 脚の 4 節リンクの寸法と車高の範囲（2026-10-25 に CAD で確定。設計書 rabcl `2026-10-25-gamma-leg-linkage-design.md`） | 旧: `LEG_ANGLE_MIN / MAX` 0.15 / 1.45、`LEG_TILT_GAIN` 1.0 |
 | `LEG_AZIMUTH[4]` | 脚の方位角 [rad]（FR, FL, BR, BL） | −π/4, π/4, −3π/4, 3π/4 |
 | `LEG_KP / KD` | 脚の MIT ゲイン | 1.0 / 0.1（実測済みの柔らかさ） |
-| `LEG_LOAD_FORCE`、`LEG_FRICTION_FF / DEADBAND` | 荷重 [N] × dd/dθ、摩擦 [Nm]、不感帯 [rad] | 0 / 0.25 / 0.02（組み上がってから取り直す） |
+| `LEG_LOAD_FORCE`、`LEG_FRICTION_FF / FRICTION_BAND` | 荷重 [N] × dd/dθ、摩擦 [Nm]、摩擦分を比例させる幅 [rad] | 0 / 0.25 / 0.04（組み上がってから取り直す） |
 | `LEG_RAMP_RATE` | 目標の移動速度 [rad/s] | 0.5（しゃがみの速さ。実機で上げる） |
 | `NECK_KP / KD` | DM3507 の MIT ゲイン（首 Pitch / Roll を入れるとき） | beta の PITCH_KP / KD |
 | `NECK_DIFFERENTIAL` | 論理関節 → 2 モータの係数 | 仮: a = p + r、b = p − r（機構確定後に差し替え。Pitch のみなら roll 係数 0） |

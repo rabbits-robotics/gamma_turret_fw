@@ -164,8 +164,8 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `LEG_DROP_MIN / MAX` | 0.0691 / 0.1153 m（θ 0.15 / 1.42 rad） | 車高 0 / 1 の車輪の下がり。メカスト（0 / 90°）に 0.15 rad の余裕 |
 | `LEG_TILT_RADIUS`、`LEG_AZIMUTH` | 0.164 m、FR −π/4 / FL π/4 / BR −3π/4 / BL 3π/4 | 傾き → 脚の下がりの差（接地点の半径 × 角度） |
 | `LEG_KP / KD` | 1.0 / 0.1 | MIT ゲイン（実測済みの柔らかさ） |
-| `LEG_LOAD_FORCE`、`LEG_FRICTION_FF / DEADBAND` | 0 N、0.25 Nm / 0.02 rad | tff = 荷重 × dd/dθ（姿勢で変わる）± 摩擦分（荷重は組み上がってから取り直す） |
-| `LEG_RAMP_RATE` | 0.5 rad/s | 目標の移動速度（しゃがみの速さ） |
+| `LEG_LOAD_FORCE`、`LEG_FRICTION_FF / FRICTION_BAND` | 0 N、0.25 Nm / 0.04 rad | tff = 荷重 × dd/dθ（姿勢で変わる）+ 摩擦分 × clamp(差 / band, ±1)。sign と不感帯だと縁で 15 Hz の小振動が出た（2026-11-01）。荷重は接地してから取り直す |
+| `LEG_RAMP_RATE` | 4.0 rad/s | 目標の移動速度。実機（浮かせた状態）で 0.5 / 1.0 / 2.0 は「遅い」、4.0 で前脚が 0.5 rad を 0.15 s、立ち上がりに 3° の行き過ぎ（2026-11-01）。`kp` / `kd` と荷重 FF は接地してから |
 | `LEG_TORQUE_LIMIT / TEMP_LIMIT` | 4.0 Nm / 80 ℃ | 安全策 |
 | `YAW_ZERO_OFFSET` | 0（**首の配線後に実測**） | エンコーダ 0 と機体前方のずれ [rad]。beta は 240°。車輪の視点基準・脚の傾きの向き・首の目標すべてに効く |
 | `YAW_KP / KD / OUTPUT_MAX` | 5000 / 600 / 2000 | beta の yaw_pd（LK トルク指令値） |
@@ -185,13 +185,13 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 実機確認の手順（帰宅後、脚 4 本で）:
 
 1. 24V + USB で起動。起動時に脚が動かないこと（現在位置を保持）。`error_flags` と `JOINT_STATE` が PC に出ること（Jetson 接続前は USB-UART + ROS 2 の robot_bridge）
-2. `reference_command` で `body_height` を 0 → 0.5 → 1 → 0。各脚が `BodyPosture` の計算どおりに動き、ロール / ピッチで左右・前後の差が出ること
-3. 指令を止めて 0.5 s 後に途絶の扱いになり、脚が据え置き、`error_flags` の bit5 が立つこと。再開で復帰
+2. `reference_command` で `body_height` を 0 → 0.5 → 1 → 0。各脚が `BodyPosture` の計算どおりに動き、ロール / ピッチで左右・前後の差が出ること — **2026-11-01 OK**（浮かせた状態。0 = 0.150、0.5 = 0.835、1 = 1.420 rad、ロール ±0.15 とピッチ ±0.15 で片側 0.345 / 反対側 1.273。詳細は `docs/2026-10-25-control-bringup-checklist.md`）
+3. 指令を止めて 0.5 s 後に途絶の扱いになり、脚が据え置き、`error_flags` の bit5 が立つこと。再開で復帰 — **2026-11-01 OK**
 4. 1 本の脚を手で押してトルク上限を超えさせ、その脚だけディセーブル（LED が変わる）になること
 5. 起動ログで esp_timer タスクのスタック残量を確認する（`CanScheduler` のコールバックで `OmniDrive::CalcVel` の double 演算が走る。足りなければ `CONFIG_ESP_TIMER_TASK_STACK_SIZE` を上げる）
 6. **IMU（BNO055 のモジュール）**: (a) ジャンパは UART モード（J3 接続・J4 接続・**J5 を完全に除去**・J2 開放）。**J3 と J5 が同時に閉じていると VOUT（2.8 V）が GND に短絡して LP5907 が発熱する**（2026-11-01 に実測。2 台がこれで止まった）。盛る前に無電源で VOUT（ピン 8）–GND が高抵抗であることを確認し、挿す前にジャンパ線給電で VOUT 2.8 V と発熱なしを確認。(b) 起動ログの `IMU:` が `RUNNING` になり `samples` が毎秒約 100 増えること（`errors` は連続エラー数、`reinits` はソフトリセット回数）— **2026-11-01 OK**（毎秒 99、60 秒で再初期化 0）。(c) 静止させて `calib` の bit5:4（ジャイロ）が 3 になるまでの時間 — **OK**（起動後数秒）。(d) 軸: カメラを前に向けた状態から、カメラを下に向ける → `pitch` が正、機体を右に傾ける → `roll` が正、上から見て左に回す → `yaw` が増える。合わなければ `IMU_AXIS_MAP_*` と `IMU_*_SIGN` を直す — **試験向きで OK**（`IMU_ROLL_SIGN = −1` に変更。本番の取り付け向きで再確認）。(e) 一定速度で回して `gyro[2]` と yaw の変化率が一致。ピッチ・ロールも振って `gyro[0]` / `gyro[1]` と roll / pitch の変化率の符号が合うこと — **試験向きで OK**（BNO055 の X 軸が左右、Y 軸が前後だったので `IMU_GYRO_INDEX` で入れ替え。時計回りで gyro[2] −0.7 rad/s、yaw も減少）。(f) 無限回転中に首が視点を保つ（`Gimbal` の経路）。(g) 起動ログで `SET_CLOCK` を抜けて `RUNNING` に進むこと（外付け水晶 true で止まるなら水晶の実装か CLK_SEL の扱いを疑う）。(h) 首を回したまま IMU を抜き差し（または安定化を切 → 入）しても砲塔が跳ばない（`AnchorImu` の経路）
 7. **24V 断 → 復電**（Jetson または PC の USB で P4 を給電したまま）: 24V を切ると 1 秒以内にログに `NO-FEEDBACK` と `MOTOR-POWER-LOST` が出て指令が止まり、戻すと脚が今の位置から静かに指令の姿勢へ戻ること（跳ねない）。`error_flags` bit6 が立って消えること
-8. 必要なゲイン・`LEG_RAMP_RATE`・tff の値をここに記録し、`robot.hpp` を更新してからコミット
+8. 必要なゲイン・`LEG_RAMP_RATE`・tff の値をここに記録し、`robot.hpp` を更新してからコミット — `LEG_RAMP_RATE` 4.0 と `LEG_FRICTION_BAND` 0.04 は記録済み。`LEG_KP / KD`、`LEG_LOAD_FORCE` は接地後
 
 ### ハード設計由来の制約
 
