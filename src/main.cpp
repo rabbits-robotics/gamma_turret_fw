@@ -138,8 +138,9 @@ void LogPc(const Comm & comm, const Controller & controller)
   rabcl::protocol::JointCmd pitch_cmd;
   const bool has_yaw = comm.GetJointCmd(robot::YAW, yaw_cmd);
   const bool has_pitch = comm.GetJointCmd(robot::PITCH, pitch_cmd);
-  ESP_LOGI(TAG, "PC: rx_frames=%lu crc_errors=%lu %s error_flags=0x%02lX%s | vel %.2f %.2f %.2f | pose h=%.2f r=%.2f p=%.2f | modes %s | neck yaw=%s%.2f pitch=%s%.2f",
+  ESP_LOGI(TAG, "PC: rx_frames=%lu crc_errors=%lu motor_cmd_frames=%lu %s error_flags=0x%02lX%s | vel %.2f %.2f %.2f | pose h=%.2f r=%.2f p=%.2f | modes %s | neck yaw=%s%.2f pitch=%s%.2f",
            static_cast<unsigned long>(comm.rx_frames()), static_cast<unsigned long>(comm.crc_errors()),
+           static_cast<unsigned long>(comm.motor_command_frames()),
            controller.command_lost() ? "LOST" : "ok", static_cast<unsigned long>(controller.error_flags()),
            controller.motor_power_lost() ? " MOTOR-POWER-LOST" : "",
            has_vel ? static_cast<double>(vel.vx) : 0.0, has_vel ? static_cast<double>(vel.vy) : 0.0,

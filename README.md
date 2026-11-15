@@ -117,7 +117,7 @@ DAMIAO のモータは CAN_ID を 16 未満にする（説明書の推奨）。�
 | ファイル | 役割 |
 |---|---|
 | `src/robot.hpp` | 機体定義。関節番号（`robot::Joint`、rabbits_bridge の `config/gamma.yaml` の `joints` と同じ並び）、モード番号、関節とモータ / CAN ID の対応表 |
-| `src/comm.hpp` / `src/comm.cpp` | `Comm`。送信タスク（持っている関節の `JOINT_STATE` を 100 Hz、IMU は値があれば 100 Hz、`INFO` / `SYSTEM`（`error_flags` 入り）を 1 Hz）と受信タスク（`CHASSIS_VEL` / `BODY_POSE` / `JOINT_CMD` / `MODE` を共有状態に置き、制御側が `Get*` で読む。最終受信時刻を途絶監視に使う） |
+| `src/comm.hpp` / `src/comm.cpp` | `Comm`。送信タスク（持っている関節の `JOINT_STATE` を 100 Hz、`Controller::Tick` が集めた「そのティックにモータへ送った指令」を `MOTOR_COMMAND` で 100 Hz（PC 側では bridge の `motor_commands` → rviz の Command 表示）、IMU は値があれば 100 Hz、`INFO` / `SYSTEM`（`error_flags` 入り）を 1 Hz）と受信タスク（`CHASSIS_VEL` / `BODY_POSE` / `JOINT_CMD` / `MODE` を共有状態に置き、制御側が `Get*` で読む。最終受信時刻を途絶監視に使う） |
 | `src/board.hpp` | `PC_UART_*`（ポート、ピン、ボーレート） |
 
 PC 側は rabbits_bridge の `robot_bridge`（`config/gamma.yaml`）。関節状態の `effort` は DAMIAO がトルク [Nm]、LK が電流 [A]。
@@ -192,6 +192,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 6. **IMU（BNO055 のモジュール）**: (a) ジャンパは UART モード（J3 接続・J4 接続・**J5 を完全に除去**・J2 開放）。**J3 と J5 が同時に閉じていると VOUT（2.8 V）が GND に短絡して LP5907 が発熱する**（2026-11-01 に実測。2 台がこれで止まった）。盛る前に無電源で VOUT（ピン 8）–GND が高抵抗であることを確認し、挿す前にジャンパ線給電で VOUT 2.8 V と発熱なしを確認。(b) 起動ログの `IMU:` が `RUNNING` になり `samples` が毎秒約 100 増えること（`errors` は連続エラー数、`reinits` はソフトリセット回数）— **2026-11-01 OK**（毎秒 99、60 秒で再初期化 0）。(c) 静止させて `calib` の bit5:4（ジャイロ）が 3 になるまでの時間 — **OK**（起動後数秒）。(d) 軸: カメラを前に向けた状態から、カメラを下に向ける → `pitch` が正、機体を右に傾ける → `roll` が正、上から見て左に回す → `yaw` が増える。合わなければ `IMU_AXIS_MAP_*` と `IMU_*_SIGN` を直す — **試験向きで OK**（`IMU_ROLL_SIGN = −1` に変更。本番の取り付け向きで再確認）。(e) 一定速度で回して `gyro[2]` と yaw の変化率が一致。ピッチ・ロールも振って `gyro[0]` / `gyro[1]` と roll / pitch の変化率の符号が合うこと — **試験向きで OK**（BNO055 の X 軸が左右、Y 軸が前後だったので `IMU_GYRO_INDEX` で入れ替え。時計回りで gyro[2] −0.7 rad/s、yaw も減少）。(f) 無限回転中に首が視点を保つ（`Gimbal` の経路）。(g) 起動ログで `SET_CLOCK` を抜けて `RUNNING` に進むこと（外付け水晶 true で止まるなら水晶の実装か CLK_SEL の扱いを疑う）。(h) 首を回したまま IMU を抜き差し（または安定化を切 → 入）しても砲塔が跳ばない（`AnchorImu` の経路）
 7. **24V 断 → 復電**（Jetson または PC の USB で P4 を給電したまま）: 24V を切ると 1 秒以内にログに `NO-FEEDBACK` と `MOTOR-POWER-LOST` が出て指令が止まり、戻すと脚が今の位置から静かに指令の姿勢へ戻ること（跳ねない）。`error_flags` bit6 が立って消えること
 8. 必要なゲイン・`LEG_RAMP_RATE`・tff の値をここに記録し、`robot.hpp` を更新してからコミット — `LEG_RAMP_RATE` 4.0 と `LEG_FRICTION_BAND` 0.04 は記録済み。`LEG_KP / KD`、`LEG_LOAD_FORCE` は接地後
+9. **`MOTOR_COMMAND`**: `ros2 topic hz /motor_commands` が約 100 Hz、`ros2 topic echo /motor_commands --once` に車輪 4 つ（24V 入り）と脚 4 本（イネーブル後）が入り、脚の `position` が指令どおり（`JOINT_STATE` の `position` と同じ値へ追いつく）。rviz（`gamma.launch.py rviz:=true`）で Command（不透明）と Actual（半透明）が重なり、車高を変えると Command が先に動いて Actual が追いつく。IMU で機体を傾けると Actual の胴体だけ傾く（`ros2 param set /imu_footprint_node height_mode plane` との見え方も比べる）
 
 ### ハード設計由来の制約
 

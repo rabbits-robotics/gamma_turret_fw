@@ -187,6 +187,8 @@ bool Controller::BuildWheel(
   {
     Critical critical(lock_);
     joints_[joint].target = v;
+    joints_[joint].effort = 0.0f;
+    joints_[joint].commanded = true;
   }
   return true;
 }
@@ -242,6 +244,8 @@ bool Controller::BuildLeg(
   {
     Critical critical(lock_);
     joints_[joint].target = mit.pos;
+    joints_[joint].effort = mit.tff;
+    joints_[joint].commanded = true;  // トリップ時のディセーブル送信では立てない（指令ではない）
   }
   return true;
 }
@@ -269,6 +273,8 @@ bool Controller::BuildYaw(const CommandSnapshot & cmd, rabcl_esp32::CanFrame & o
   {
     Critical critical(lock_);
     joints_[robot::YAW].target = target;
+    joints_[robot::YAW].effort = torque;
+    joints_[robot::YAW].commanded = true;
   }
   return true;
 }
@@ -382,4 +388,27 @@ void Controller::Tick(int64_t now_us)
   motor_power_lost_ = motor_power_lost;
   error_flags_ = flags;
   comm_.SetErrorFlags(flags);
+
+  // 前回の Tick 以降にモータへ送った指令を集めて PC に返す（MOTOR_COMMAND）。
+  // 位置制御（脚・首 Yaw）は position、速度制御（車輪）は velocity、effort はフィードフォワード
+  proto::MotorCommand motor_cmds[robot::JOINT_COUNT];
+  uint8_t n_motor_cmds = 0;
+  {
+    Critical critical(lock_);
+    for (uint8_t j = 0; j < robot::JOINT_COUNT; ++j) {
+      JointState & js = joints_[j];
+      if (!js.commanded) {
+        continue;
+      }
+      js.commanded = false;
+      proto::MotorCommand & mc = motor_cmds[n_motor_cmds++];
+      mc.id = j;
+      mc.position = robot::IsWheel(static_cast<robot::Joint>(j)) ? 0.0f : js.target;
+      mc.velocity = robot::IsWheel(static_cast<robot::Joint>(j)) ? js.target : 0.0f;
+      mc.effort = js.effort;
+    }
+  }
+  if (n_motor_cmds > 0) {
+    comm_.SetMotorCommands(motor_cmds, n_motor_cmds);  // Comm の mutex はタスク文脈（Tick）から。0 件なら未送信の組を消さない
+  }
 }

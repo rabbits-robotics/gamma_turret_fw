@@ -51,7 +51,8 @@ public:
   bool BuildCommand(robot::Joint joint, int64_t now_us, rabcl_esp32::CanFrame & out);
   // 送信スケジューラから。DM モータで、トリップしていなければ true（1 Hz のイネーブル対象）
   bool NeedsEnable(robot::Joint joint) const;
-  // 制御タスクから（100 Hz）。Comm の指令を取り込み、途絶監視と胴体姿勢の更新をする
+  // 制御タスクから（100 Hz）。Comm の指令を取り込み、途絶監視と胴体姿勢の更新をし、
+  // 前回の Tick 以降にモータへ送った指令を MOTOR_COMMAND として Comm に渡す
   void Tick(int64_t now_us);
 
   uint32_t error_flags() const {return error_flags_;}
@@ -72,6 +73,8 @@ private:
     int64_t last_fb_us = 0;
     uint32_t rx = 0;
     float target = 0.0f;
+    float effort = 0.0f;      // 最後に送った指令のフィードフォワードトルク（脚: tff、首 Yaw: トルク指令）
+    bool commanded = false;   // 前回の Tick 以降にモータへ指令を送った（Tick が MOTOR_COMMAND に集めて戻す）
   };
 
   struct LegControl

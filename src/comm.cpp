@@ -83,6 +83,18 @@ void Comm::ClearImu()
   imu_present_ = false;
 }
 
+void Comm::SetMotorCommands(const proto::MotorCommand * cmds, uint8_t count)
+{
+  if (count > proto::MAX_MOTOR_COMMANDS) {
+    count = proto::MAX_MOTOR_COMMANDS;
+  }
+  Lock lock(mutex_);
+  for (uint8_t i = 0; i < count; ++i) {
+    motor_cmds_[i] = cmds[i];
+  }
+  motor_cmd_count_ = count;
+}
+
 // --- 下り ---
 
 bool Comm::GetJointCmd(uint8_t id, proto::JointCmd & cmd) const
@@ -153,6 +165,7 @@ void Comm::TxTask()
     ++loops;
 
     SendJointStates();
+    SendMotorCommands();
 
     bool imu_present;
     proto::Imu imu;
@@ -202,6 +215,26 @@ void Comm::SendJointStates()
   if (n > 0) {
     Send(tx_buf_, proto::EncodeJointState(batch, n, tx_buf_, sizeof(tx_buf_)));
   }
+}
+
+void Comm::SendMotorCommands()
+{
+  // Tick が置いた分を 1 フレームで送り、空にする（次の Tick まで送らない）
+  proto::MotorCommand cmds[proto::MAX_MOTOR_COMMANDS];
+  uint8_t count;
+  {
+    Lock lock(mutex_);
+    count = motor_cmd_count_;
+    for (uint8_t i = 0; i < count; ++i) {
+      cmds[i] = motor_cmds_[i];
+    }
+    motor_cmd_count_ = 0;
+  }
+  if (count == 0) {
+    return;
+  }
+  Send(tx_buf_, proto::EncodeMotorCommand(cmds, count, tx_buf_, sizeof(tx_buf_)));
+  motor_command_frames_ = motor_command_frames_ + 1;
 }
 
 void Comm::Send(const uint8_t * buf, size_t len)

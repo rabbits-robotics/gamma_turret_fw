@@ -115,3 +115,10 @@ PC リンク無しで確かめられる範囲は全部 OK。残りは README 手
 - 脚の個体差: 静止時の残差は右前 0.02 / 左前 0.03 / 右後 0.02〜0.04 / **左後 0.06〜0.10 rad**。左後は下げる方向で他の 1.5 倍遅く、ときどき 1 秒以上引っ掛かる（上限の 0.35〜0.5 Nm で押しても動かない）→ 静止摩擦が大きい。メカの組付けをメンテしてから再測定。
 - 手順 4（過トルク）は負荷の道具が無いので未実施、手順 5（esp_timer のスタック残量）はログ未実装のまま。
 - `LEG_KP / KD` と `LEG_LOAD_FORCE` の調整は接地させてから。
+
+## 2026-11-15 追記: MOTOR_COMMAND（README 手順 9、rviz の Command / Actual）
+
+- 構成: AE-FT234X + `gamma.launch.py`（robot_bridge + gamepad + rviz、`rviz:=true`）、脚 4 本のみ。車輪・首 Yaw / Pitch は未配線（`/motor_commands` と `/motor_joint_states` に出ないのが正常。車輪はフィードバックが来るまで指令を送らない設計）。24V 無しでは両トピックとも出ず、`imu/data` だけ出る。
+- 手順 9 **OK**: `/motor_commands` 100.4 Hz、`/motor_joint_states` 100.1 Hz。脚 FR の `position` を 12 秒記録: Command は 4 rad/s のランプ（100 ms で 0.40 rad）で先に動き、Actual は 100〜200 ms 遅れて追従、到達直後に 0.03〜0.07 rad 行き過ぎてから収束。
+- 浮かせた状態の定常偏差: Actual が Command より大きい（1.2731 → 1.3006、0.8355 → 0.86〜0.90、0.1501 → 0.1646）。摩擦帯域内の無負荷オフセット。`LEG_KP / KD` と合わせて接地後に見直す。
+- rviz: 浮かせて機体を手で傾けると Actual（半透明）だけが傾く。接地して車高・ロール・ピッチを入れると Command（脚の幾何）と Actual（IMU）が重なる → IMU の取り付け向きと符号は合っている。`height_mode` は `lowest_wheel` / `plane` の両方で確認。
