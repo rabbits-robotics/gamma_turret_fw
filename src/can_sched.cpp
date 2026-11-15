@@ -78,7 +78,13 @@ void CanScheduler::OnSlot()
   if (enable_slot && controller_.NeedsEnable(joint)) {
     frame.id = robot::JOINTS[joint].can_id;  // beta と同じく速度モードの車輪も CAN_ID へ送る
     frame.dlc = 8;
-    rabcl::Can::PrepareDMMotorEnable(frame.data);
+    frame.ext = false;
+    frame.rtr = false;
+    if (robot::IsDm(robot::JOINTS[joint].motor)) {
+      rabcl::Can::PrepareDMMotorEnable(frame.data);
+    } else {
+      rabcl::Can::PrepareLKMotorReadMotorState2(frame.data);  // LK は聞かれた時だけ返す。最初のフィードバックを引き出す
+    }
     enables_ = enables_ + 1;
   } else if (!controller_.BuildCommand(joint, esp_timer_get_time(), frame)) {
     skipped_ = skipped_ + 1;

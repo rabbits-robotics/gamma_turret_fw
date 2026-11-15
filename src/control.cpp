@@ -6,6 +6,7 @@
 
 #include <esp_timer.h>
 #include <rabcl/interface/can.hpp>
+#include <rabcl/utils/utils.hpp>
 
 namespace proto = rabcl::protocol;
 
@@ -59,6 +60,7 @@ void Controller::SetFeedback(robot::Joint joint, const rabcl::MotorInfo & info, 
   JointState & js = joints_[joint];
   js.info = info;
   js.err = err;
+  const bool first_or_resumed = js.rx == 0 || js.stale;
   js.rx = js.rx + 1;
   js.last_fb_us = esp_timer_get_time();
   js.stale = false;
@@ -67,6 +69,9 @@ void Controller::SetFeedback(robot::Joint joint, const rabcl::MotorInfo & info, 
     js.enabled = err == DM_ERR_ENABLED;
   } else {
     js.enabled = true;
+  }
+  if (joint == robot::YAW && first_or_resumed) {
+    js.reanchor = true;  // 起動時 / 復電時の最初の指令は現在角から（突進しない）
   }
   if (robot::IsLeg(joint)) {
     if (js.enabled && !was_enabled) {
@@ -112,14 +117,15 @@ float Controller::yaw_angle() const
 
 bool Controller::NeedsEnable(robot::Joint joint) const
 {
-  if (joint >= robot::JOINT_COUNT || !robot::IsDm(robot::JOINTS[joint].motor)) {
-    return false;
-  }
-  if (joint == robot::PITCH || joint == robot::ROLL) {
-    return false;  // 機構が決まるまで触らない
+  if (joint >= robot::JOINT_COUNT || joint == robot::ROLL) {
+    return false;  // Roll はモータが無い
   }
   Critical critical(lock_);
-  return !joints_[joint].tripped;
+  const JointState & js = joints_[joint];
+  if (!robot::IsDm(robot::JOINTS[joint].motor)) {
+    return js.rx == 0 || js.stale;  // LK: 最初の / 復電後のフィードバックを引き出す状態読み出し
+  }
+  return !js.tripped;
 }
 
 // --- 指令 ---
@@ -138,9 +144,12 @@ bool Controller::BuildCommand(robot::Joint joint, int64_t now_us, rabcl_esp32::C
     return BuildLeg(joint, now_us, cmd, out);
   }
   if (joint == robot::YAW) {
-    return BuildYaw(cmd, out);
+    return BuildYaw(now_us, cmd, out);
   }
-  return false;  // PITCH / ROLL: 機構が決まるまで送らない
+  if (joint == robot::PITCH) {
+    return BuildPitch(cmd, out);
+  }
+  return false;  // ROLL: モータが無い
 }
 
 float Controller::ChassisWz(const CommandSnapshot & cmd) const
@@ -250,24 +259,40 @@ bool Controller::BuildLeg(
   return true;
 }
 
-bool Controller::BuildYaw(const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out)
+bool Controller::BuildYaw(int64_t now_us, const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out)
 {
-  if (!cmd.yaw_cmd_present) {
-    return false;  // PC から視点の目標が来るまで送らない
-  }
   JointState state;
   {
     Critical critical(lock_);
     state = joints_[robot::YAW];
+    joints_[robot::YAW].reanchor = false;
   }
   if (state.rx == 0 || state.stale) {
-    return false;  // フィードバックが無い / 古い（電源断）間はトルクを出さない
+    return false;  // フィードバックが無い / 古い（電源断）間はトルクを出さない（1 Hz の状態読み出しが呼び起こす）
   }
-  // 視点の目標（地面基準）− 胴体の向き = 首の関節角。途絶中は最後の目標を保持
-  const rabcl::Attitude desired = {cmd.yaw_cmd.position, 0.0f, 0.0f};
-  const float target = gimbal_.Solve(desired, cmd.body).yaw;
-  const float torque = yaw_pd_.CalcAngular(target, state.info.position_, state.info.velocity_);
   uint8_t data[8];
+  if (state.reanchor || !cmd.yaw_cmd_present) {
+    // 起動時 / 復電時、および目標が無い間はランプを現在角に置く（次の指令は今の位置から始まる）
+    yaw_ramp_ = state.info.position_;
+    yaw_last_us_ = now_us;
+  }
+  if (!cmd.yaw_cmd_present) {
+    // PC から視点の目標が来るまでトルクは出さず、状態読み出しでフィードバックだけ続ける（PC に関節角を返す）
+    rabcl::Can::PrepareLKMotorReadMotorState2(data);
+    FillFrame(robot::JOINTS[robot::YAW].can_id, data, out);
+    return true;
+  }
+  // 視点の目標（地面基準）− 胴体の向き = 首の関節角。途絶中は最後の目標を保持。
+  // 目標へは YAW_RAMP_RATE で寄せる（差が大きくても全力で突進しない）
+  const rabcl::Attitude desired = {cmd.yaw_cmd.position, 0.0f, 0.0f};
+  const float goal = gimbal_.Solve(desired, cmd.body).yaw;
+  const float dt = std::clamp(static_cast<float>(now_us - yaw_last_us_) / 1e6f, 0.0f, MAX_DT_S);
+  yaw_last_us_ = now_us;
+  const float step = robot::YAW_RAMP_RATE * dt;
+  const float diff = std::clamp(rabcl::Utils::WrapPi(goal - yaw_ramp_), -step, step);
+  yaw_ramp_ = rabcl::Utils::WrapPi(yaw_ramp_ + diff);
+  const float target = yaw_ramp_;
+  const float torque = yaw_pd_.CalcAngular(target, state.info.position_, state.info.velocity_);
   rabcl::Can::PrepareLKMotorTorqueCmd(static_cast<int16_t>(torque), data);
   FillFrame(robot::JOINTS[robot::YAW].can_id, data, out);
   {
@@ -275,6 +300,44 @@ bool Controller::BuildYaw(const CommandSnapshot & cmd, rabcl_esp32::CanFrame & o
     joints_[robot::YAW].target = target;
     joints_[robot::YAW].effort = torque;
     joints_[robot::YAW].commanded = true;
+  }
+  return true;
+}
+
+bool Controller::BuildPitch(const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out)
+{
+  JointState state;
+  {
+    Critical critical(lock_);
+    state = joints_[robot::PITCH];
+  }
+  if (!state.enabled || state.rx == 0 || state.stale) {
+    return false;  // イネーブル応答が来るまで / 途絶中（電源断）は MIT 指令を送らない
+  }
+  uint8_t data[8];
+  if (!cmd.pitch_cmd_present) {
+    // PC から視点の目標が来るまでトルクは出さない。ただし DM の CAN タイムアウト（通信途絶 D で赤点滅）に
+    // 入らないよう、ゲイン 0 の MIT 指令を送り続ける（軸は自由。フィードバックも毎スロット返る）
+    rabcl::Can::PrepareDMMotorMITCmd(
+      0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+      rabcl::Can::DM3507_PMAX, rabcl::Can::DM3507_VMAX, rabcl::Can::DM3507_TMAX, data);
+    FillFrame(robot::JOINTS[robot::PITCH].can_id, data, out);
+    return true;
+  }
+  // 視点の目標（地面基準）− 胴体の向き = 首の関節角。可動角に収める
+  const rabcl::Attitude desired = {0.0f, cmd.pitch_cmd.position, 0.0f};
+  const float target =
+    std::clamp(gimbal_.Solve(desired, cmd.body).pitch, robot::PITCH_MIN, robot::PITCH_MAX);
+  const float tff = robot::PITCH_GRAVITY_FF * std::sin(state.info.position_);
+  rabcl::Can::PrepareDMMotorMITCmd(
+    target, 0.0f, robot::PITCH_KP, robot::PITCH_KD, tff,
+    rabcl::Can::DM3507_PMAX, rabcl::Can::DM3507_VMAX, rabcl::Can::DM3507_TMAX, data);
+  FillFrame(robot::JOINTS[robot::PITCH].can_id, data, out);
+  {
+    Critical critical(lock_);
+    joints_[robot::PITCH].target = target;
+    joints_[robot::PITCH].effort = tff;
+    joints_[robot::PITCH].commanded = true;
   }
   return true;
 }
@@ -292,6 +355,7 @@ void Controller::Tick(int64_t now_us)
   comm_.GetChassisVel(cmd.chassis_vel);
   cmd.body_pose_present = comm_.GetBodyPose(cmd.body_pose);
   cmd.yaw_cmd_present = comm_.GetJointCmd(robot::YAW, cmd.yaw_cmd);
+  cmd.pitch_cmd_present = comm_.GetJointCmd(robot::PITCH, cmd.pitch_cmd);
   uint8_t mode = 0;
   cmd.infinite_rotation = comm_.GetMode(robot::CHASSIS, mode) && mode == 1;
   uint8_t stabilize = 1;

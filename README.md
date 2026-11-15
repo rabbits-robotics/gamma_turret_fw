@@ -44,9 +44,9 @@ rabcl の共通プロトコル（下記「PC との通信」）。`CHASSIS_VEL`�
 
 | アクチュエータ | 通信 | 内容 | 状態 |
 |---|---|---|---|
-| 首 Yaw 軸 | CAN1（LK モータ） | MHF5005。視点の安定化（`Gimbal` → `PdGravityFf` → トルク指令、各 500 Hz） | 🔧 |
-| 首 Pitch 軸 | CAN1（DAMIAO） | DM3507。差動リンクの機構が未決定のため指令を送らない | 💭 |
-| 首 Roll 軸 | CAN1（DAMIAO） | DM3507。同上 | 💭 |
+| 首 Yaw 軸 | CAN1（LK モータ） | MHF5005。視点の安定化（`Gimbal` → 目標を `YAW_RAMP_RATE` で寄せる → `PdGravityFf` → トルク指令、1000 Hz）。単体で追従と向きを確認（2026-11-15）、ゲインとゼロ点は機体に載せてから | 🔧 |
+| 首 Pitch 軸 | CAN1（DAMIAO） | DM3507。`Gimbal` の pitch を可動角（−15°〜+30°）に収めて MIT 位置指令（1000 Hz）。単体で追従と向きを確認（2026-11-15）、ゼロ点（DMTool の原点リセット）は機体に載せてから | 🔧 |
+| 首 Roll 軸 | — | モータは無い（関節番号だけ残す。PC 側の `roll_joint` と対） | — |
 | 車体（CAN_CHASSIS 1〜4） | CAN2（DAMIAO） | DM2325 × 4、オムニ 4 輪（速度制御、`rabcl::OmniDrive`、視点基準 + 無限回転、各 250 Hz） | 🔧 |
 | 脚（CAN_LEG 1〜4） | CAN2（DAMIAO） | DM4310 × 4、各車輪の持ち上げ機構。`BodyPosture` → `LegDamper`（MIT、各 250 Hz） | 🔧 |
 | 射出ローラー × 2 | PWM → ESC | 50Hz サーボパルス。待機 1000µs / 射出 1200µs（beta 実測値を踏襲） | 💭 |
@@ -73,7 +73,7 @@ DAMIAO のフィードバックの先頭バイトは「CAN_ID の下位 8 bit | 
 |---|---|---|---|---|---|---|---|
 | CAN1 | 首 Yaw | MHF5005（LK） | トルク（0xA1） | `0x141` | `0x141` | `0x141` | beta と同じ |
 | CAN1 | 首 Pitch | DM3507 | MIT | `0x42` | `0x42` | `0x52` | beta と同じ |
-| CAN1 | 首 Roll | DM3507 | MIT | `0x02` | `0x02` | `0x12` | 新規 |
+| CAN1 | 首 Roll | （モータ無し） | — | `0x02` | — | `0x12` | 送らない。番号だけ予約 |
 | CAN2 | 前右輪 | DM2325 | 速度 | `0x43` | `0x243` | `0x53` | beta と同じ |
 | CAN2 | 前左輪 | DM2325 | 速度 | `0x44` | `0x244` | `0x54` | beta と同じ |
 | CAN2 | 後右輪 | DM2325 | 速度 | `0x45` | `0x245` | `0x55` | beta と同じ |
@@ -91,7 +91,7 @@ DAMIAO のフィードバックの先頭バイトは「CAN_ID の下位 8 bit | 
 
 ### CAN の通信周期（仕様と実測）
 
-仕様: 各モータとの指令 / フィードバックの往復を **CAN2 は 250 Hz、CAN1 は 500 Hz** で回す。指令はまとめて出さず等間隔に回す（CAN2 は 0.5 ms ごとに 1 台、CAN1 は 0.67 ms ごとに 1 台）。
+仕様: 各モータとの指令 / フィードバックの往復を **CAN2 は 250 Hz、CAN1 は 1000 Hz** で回す。指令はまとめて出さず等間隔に回す（CAN2 は 0.5 ms ごとに 1 台、CAN1 も 0.5 ms ごとに 1 台で 2 台）。CAN1 は Roll のモータが無くなって 2 関節になったので 1000 Hz に上げた（2026-11-15。MHF5005 と DM3507 とも毎秒 1000 返す）。
 
 | バス | モータ | フレーム数 | バス負荷（1 Mbps、1 フレーム約 130 µs） |
 |---|---|---|---|
@@ -100,7 +100,7 @@ DAMIAO のフィードバックの先頭バイトは「CAN_ID の下位 8 bit | 
 
 実測（2026-10-22、DM4310 1 台、MIT 指令への応答。commit 8a07f66 の `src/main.cpp`、`RATE_SWEEP`）: 100 / 200 / 500 / 1000 / 2000 Hz のいずれも損失 0、応答遅延 259〜277 µs（指令と応答のフレーム 2 枚分）。2 kHz = 4,000 フレーム/秒で CAN2 の仕様と同じ量。
 
-実測（2026-10-23、脚 4 本を 1 ms ごとに 1 本ずつ = 各脚 250 Hz、`src/main.cpp`）: 4 本とも毎秒 250 送信 / 250 受信、送信失敗 0、CAN2 のエラー 0。両バス同時（合計 7,000 フレーム/秒）は首のモータが揃ったときに再測定する。
+実測（2026-10-23、脚 4 本を 1 ms ごとに 1 本ずつ = 各脚 250 Hz、`src/main.cpp`）: 4 本とも毎秒 250 送信 / 250 受信、送信失敗 0、CAN2 のエラー 0。CAN1（2026-11-15、首 Yaw + Pitch を単体で接続、脚 4 本と同時）: 2 台とも毎秒 1000 送信 / 1000 受信、送信失敗 0。両バス同時で合計約 8,000 フレーム/秒、取りこぼし無し。
 
 ### 脚（DM4310）の実測（2026-10-22〜23、`src/main.cpp` の `HOLD_POSITION`。4 本とも ID 設定・原点リセット・配線済み）
 
@@ -131,7 +131,7 @@ PC 側は rabbits_bridge の `robot_bridge`（`config/gamma.yaml`）。関節状
 ```
 Comm（PC 指令）──┐                      ┌── CanScheduler CAN2（0.5 ms × 8 関節 = 各 250 Hz）── 車輪 4 + 脚 4
 ImuTask（BNO055、UART3、100 Hz）→ ImuStore ──┼── Controller ── BuildCommand ─┤
-CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.67 ms × 3 関節 = 各 500 Hz）── 首 Yaw（Pitch / Roll は送らない）
+CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.5 ms × 2 関節 = 各 1000 Hz）── 首 Yaw + Pitch（Roll はモータ無し）
 （フィードバック）
 ```
 
@@ -141,16 +141,16 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `src/imu.hpp` | `ImuStore`（IMU の共有状態: 姿勢、角速度、有効フラグ、計測時刻、計測時の首 Yaw 角） |
 | `src/imu_task.hpp` / `.cpp` | `ImuTask`。BNO055 を UART3 で読む FreeRTOS タスク。rabcl の `BNO055UartDriver`（起動シーケンス・100 Hz 読み・再初期化はバス非依存の `BNO055Sequencer`）を `SerialPort` でつなぎ、「要求の直前に受信バッファを空にする → 要求 → ヘッダ 2 バイトを読み、BB ならその長さ分を追加で読む（約 2 ms）→ 10 ms 境界で次」で回す（読み周期はこのタスクの tick だけが持つ）。BNO055 の融合更新と読みが重なると `EE 07`（bus over run）が返るので、その直後だけは 10 ms 境界を待たず即再送して位相をずらす（実機では毎秒 3〜4 回、連続はしない）。起動時に待たない（`valid = false` で始まり、初期化できた時点から使う）。落ちたら `valid = false` と `Comm::ClearImu` |
 | `src/control.hpp` / `.cpp` | `Controller`。車輪 = `OmniDrive`（視点基準、首 Yaw の角度で回す）+ 無限回転 `SPIN_SPEED`。脚 = `BodyPosture` → `LegDamper` → MIT。首 Yaw = `Gimbal`（視点目標 − 胴体の向き `BodyAttitude`）→ `PdGravityFf` → LK トルク。`Tick`（100 Hz）が Comm の指令を取り込み、`CommandWatchdog` と `BodyAttitude` を更新 |
-| `src/can_sched.hpp` / `.cpp` | `CanScheduler`（esp_timer で 1 スロット 1 関節。DM には 1 Hz でイネーブルを 1 スロット充てる）、`CanReceiver`（受信タスク。フィードバック ID → 関節 → `Controller::SetFeedback`、`Comm::SetJointState` は 4 回に 1 回） |
+| `src/can_sched.hpp` / `.cpp` | `CanScheduler`（esp_timer で 1 スロット 1 関節。1 Hz の枠で DM にはイネーブル、LK にはフィードバックが無い間だけ状態読み出し 0x9C を充てる。LK は聞かれた時しか返さないので、これが無いと最初のフィードバックが来ず指令も始まらない）、`CanReceiver`（受信タスク。フィードバック ID → 関節 → `Controller::SetFeedback`、`Comm::SetJointState` は 4 回に 1 回） |
 | `src/main.cpp` | 生成と Start、1 秒ごとのログ |
 
 挙動:
 
-- 起動時: 脚はイネーブル応答が来た時点の角度を目標にして保持（`LegDamper::Reset`）。最初の `BODY_POSE` から `LEG_RAMP_RATE` で指令の車高へ動く。首 Yaw は `JOINT_CMD` が来るまで送らない
-- 指令途絶（`WATCHDOG_S` = 0.5 s）: 車輪 0、無限回転解除、首は最後の目標を保持、脚は最後の姿勢を保持。`error_flags` bit5
+- 起動時: 脚はイネーブル応答が来た時点の角度を目標にして保持（`LegDamper::Reset`）。最初の `BODY_POSE` から `LEG_RAMP_RATE` で指令の車高へ動く。首 Yaw は `JOINT_CMD` が来るまでトルクを出さず（状態読み出しだけ送ってフィードバックを返す）、来たら **現在角から** `YAW_RAMP_RATE` で目標へ寄せる（2026-11-15: 目標との差 3 rad に飽和指令を出して電源が落ちたので入れた）。首 Pitch は `JOINT_CMD` が来るまでゲイン 0 の MIT を送り続ける（軸は自由。送らないと DM の CAN タイムアウトで「通信途絶 D」の赤点滅になる）
+- 指令途絶（`WATCHDOG_S` = 0.5 s）: 車輪 0、無限回転解除、首は最後の目標を保持、脚は最後の姿勢を保持。`error_flags` bit5。**PC を止めても首の目標は残る**ので、机上でトルクを切りたいときは P4 をリセットする
 - 脚の安全策: フィードバックのトルクが `LEG_TORQUE_LIMIT`、ロータ温度が `LEG_TEMP_LIMIT` を超えた脚、またはモータ自身が異常コード（8〜E: 過電圧 / 過電流 / 過熱 / 過負荷など）を返した脚はディセーブルを送り続け、イネーブルも止める。`error_flags` bit0〜3（FR, FL, BR, BL）。復帰は再起動
 - 再イネーブル（電圧低下などで一度切れたあと）: その脚は今の角度を目標にし直してからランプで指令の姿勢へ戻る（段差を作らない）
-- 車輪・首 Yaw はフィードバックが来るまで指令を送らない（未配線のモータでバスを埋めない。DM へのイネーブルだけ 1 Hz で出る）
+- 車輪・首はフィードバックが来るまで指令を送らない（未配線のモータでバスを埋めない。1 Hz の枠で DM へのイネーブル、LK へは状態読み出しだけ出る）
 - モータの電源断（HP 0 で 24V だけ切れ、P4 は上位 PC の USB 給電で生きる）: フィードバックが `FEEDBACK_TIMEOUT_MS`（200 ms）止まった関節は「電源断」扱いにして指令を送らず、DM はイネーブル済みの印も落とす。`error_flags` bit6。復電でフィードバックが戻ると 1 Hz のイネーブルで有効になり、脚は現在角（メカストまで下がった位置）から `LEG_RAMP_RATE` で指令の姿勢へ戻る。車輪に電源が無い間は旋回速度の積分（IMU 無効時の首の基準）も止める
 - 胴体の向き: IMU 有効かつ `stabilize = 1` なら IMU − 首関節角（計測時刻の首角を `ImuState.neck_yaw` で渡す）、そうでなければ旋回速度の積分（beta の yaw_ff 相当）。yaw を追うのは無限回転中だけ（普通の旋回では首は胴体と一緒に回る。`BodyAttitude::SetYawTracking`）。`error_flags` bit4 = IMU 無効
 - IMU の約束: BNO055 の融合モードは IMU（磁気なし。方位は起動時の向きが 0）。heading は時計回り正なので `yaw = WrapPi(-heading)`、pitch / roll の符号は `IMU_PITCH_SIGN / IMU_ROLL_SIGN`（実機で確定）。軸の入れ替えは BNO055 の `AXIS_MAP`（`IMU_AXIS_MAP_CONFIG / SIGN`）で行い、出力をカメラ座標系（x 前、y 左、z 上）にする。ジャイロのゼロ点は静止を検出したとき自動で合う（起動後に静止待ちはしない）。通信が途絶・エラー続き（連続 10 回）ならソフトリセットして初期化をやり直す（終端状態なし）
@@ -168,7 +168,10 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `LEG_RAMP_RATE` | 4.0 rad/s | 目標の移動速度。実機（浮かせた状態）で 0.5 / 1.0 / 2.0 は「遅い」、4.0 で前脚が 0.5 rad を 0.15 s、立ち上がりに 3° の行き過ぎ（2026-11-01）。`kp` / `kd` と荷重 FF は接地してから |
 | `LEG_TORQUE_LIMIT / TEMP_LIMIT` | 4.0 Nm / 80 ℃ | 安全策 |
 | `YAW_ZERO_OFFSET` | 0（**首の配線後に実測**） | エンコーダ 0 と機体前方のずれ [rad]。beta は 240°。車輪の視点基準・脚の傾きの向き・首の目標すべてに効く |
-| `YAW_KP / KD / OUTPUT_MAX` | 5000 / 600 / 2000 | beta の yaw_pd（LK トルク指令値） |
+| `YAW_KP / KD / OUTPUT_MAX` | 50 / 5 / 100（モータ単体・無負荷、2026-11-15） | LK トルク指令値（0.01 A/LSB）。beta の 5000 / 600 / 2000 は単体では激しく発振し、上限 2000（約 16 A）は機体全体の電流制限 10 A を 1 軸で超える。機体に載せたら慣性に合わせて再調整 |
+| `YAW_RAMP_RATE` | 10 rad/s | 首 Yaw の目標の移動速度。無限回転中の関節目標（`SPIN_SPEED` + `CHASSIS_ROT_MAX` = 8 rad/s）より大きくしておく |
+| `PITCH_KP / KD / GRAVITY_FF` | 4 Nm/rad / 0.2 Nm·s/rad / 0 Nm | DM3507 の MIT（beta の値）。単体で目標に追従（2026-11-15）。重力分は機体に載せてから |
+| `PITCH_MIN / MAX` | −15° / +30° | 可動角（URDF の `pitch_joint` と対）。向きは単体で確認済み、モータのゼロ（DMTool の SaveZero）は機体に載せてから |
 | `WHEEL_D / BODY_D`、`WHEEL_SIGN` | 0.075 / 0.328 m、−1 | beta の omni_drive。BODY_D は車輪の接地点の配置径（中間の車高、±2% は無視） |
 | `CHASSIS_VEL_MAX / ROT_MAX` | 1.0 m/s / 3.0 rad/s | ファーム側の上限 |
 | `SPIN_SPEED` | 5.0 rad/s | 無限回転の旋回（一定） |

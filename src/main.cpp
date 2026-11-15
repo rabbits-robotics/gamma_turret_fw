@@ -105,6 +105,13 @@ void LogYaw(const Controller & controller)
            s.rx == 0 ? "NO RESPONSE" : "ok", static_cast<double>(s.info.position_),
            static_cast<double>(s.target), static_cast<double>(s.info.velocity_),
            static_cast<double>(s.info.current_), static_cast<unsigned long>(s.rx));
+  const auto p = controller.GetStatus(robot::PITCH);
+  ESP_LOGI(TAG, "pitch: %s pos=%.3f target=%.3f vel=%.3f tor=%.3f Nm t_rotor=%.0f err=%u rx=%lu%s",
+           p.rx == 0 ? "NO RESPONSE" : (p.enabled ? "enabled" : "disabled"),
+           static_cast<double>(p.info.position_), static_cast<double>(p.target),
+           static_cast<double>(p.info.velocity_), static_cast<double>(p.info.torque_),
+           static_cast<double>(p.info.temperature_), p.err, static_cast<unsigned long>(p.rx),
+           p.stale ? " NO-FEEDBACK" : "");
 }
 
 void LogImu(const ImuTask & task, const ImuStore & store)

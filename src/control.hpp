@@ -3,7 +3,8 @@
 //   車輪: OmniDrive（視点基準）+ 無限回転 → 速度指令
 //   脚:   BodyPosture の目標 → LegDamper → MIT 指令。トルク / 温度超過でディセーブル
 //   首 Yaw: Gimbal（視点の目標 − 胴体の向き）→ PdGravityFf → LK トルク
-//   首 Pitch / Roll: 機構が決まるまで送らない
+//   首 Pitch: 視点目標を可動角に収めて MIT 位置指令（モータ内の PD）
+//   首 Roll: モータが無い（送らない）
 // 共有状態は短い critical section（スピンロック）で守る。critical section の中では Comm の mutex を取らない
 // （Comm は Tick / ImuTask / CanReceiver のタスク文脈からだけ呼ぶ）
 #ifndef GAMMA_TURRET_FW__CONTROL_HPP_
@@ -49,7 +50,9 @@ public:
   void SetFeedback(robot::Joint joint, const rabcl::MotorInfo & info, uint8_t err);
   // 送信スケジューラから。false = このスロットでは送らない（未イネーブル、機構未定、指令未受信）
   bool BuildCommand(robot::Joint joint, int64_t now_us, rabcl_esp32::CanFrame & out);
-  // 送信スケジューラから。DM モータで、トリップしていなければ true（1 Hz のイネーブル対象）
+  // 送信スケジューラから（1 Hz の枠）。DM: トリップしていなければイネーブルを送る。
+  // LK（首 Yaw）: フィードバックが無い / 途絶中は状態読み出し（0x9C）を送る（LK は聞かれた時だけ返すので、
+  // これが無いと最初のフィードバックが来ず指令も始まらない）
   bool NeedsEnable(robot::Joint joint) const;
   // 制御タスクから（100 Hz）。Comm の指令を取り込み、途絶監視と胴体姿勢の更新をし、
   // 前回の Tick 以降にモータへ送った指令を MOTOR_COMMAND として Comm に渡す
@@ -68,7 +71,7 @@ private:
     uint8_t err = 0;
     bool enabled = false;
     bool tripped = false;
-    bool reanchor = false;  // 脚: イネーブルが切 → 入になった（LegDamper を現在角に合わせ直す）
+    bool reanchor = false;  // 脚: イネーブルが切 → 入になった（LegDamper を現在角に合わせ直す）。首 Yaw: 最初 / 途絶後のフィードバック（ランプを現在角から）
     bool stale = false;     // フィードバック途絶（Tick が判定。復帰のフィードバックで解除）
     int64_t last_fb_us = 0;
     uint32_t rx = 0;
@@ -92,6 +95,8 @@ private:
     bool body_pose_present = false;
     rabcl::protocol::JointCmd yaw_cmd = {};
     bool yaw_cmd_present = false;
+    rabcl::protocol::JointCmd pitch_cmd = {};
+    bool pitch_cmd_present = false;
     bool infinite_rotation = false;
     bool lost = true;
     bool wheels_powered = false;  // 車輪のどれかからフィードバックが来ている（旋回速度の積分に使う）
@@ -105,7 +110,8 @@ private:
   bool BuildWheel(robot::Joint joint, const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out);
   bool BuildLeg(
     robot::Joint joint, int64_t now_us, const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out);
-  bool BuildYaw(const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out);
+  bool BuildYaw(int64_t now_us, const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out);
+  bool BuildPitch(const CommandSnapshot & cmd, rabcl_esp32::CanFrame & out);
   float ChassisWz(const CommandSnapshot & cmd) const;
 
   Comm & comm_;
@@ -121,6 +127,8 @@ private:
   rabcl::BodyAttitude attitude_;
   rabcl::Gimbal gimbal_;
   rabcl::PdGravityFf yaw_pd_;
+  float yaw_ramp_ = 0.0f;       // 首 Yaw のランプ後の目標 [rad]（BuildYaw だけが触る）
+  int64_t yaw_last_us_ = 0;     // 前回 BuildYaw がランプを進めた時刻
   rabcl::CommandWatchdog watchdog_;
 
   int64_t last_tick_us_ = 0;

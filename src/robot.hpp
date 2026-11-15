@@ -21,8 +21,8 @@ constexpr char FIRMWARE_ID[8] = "gamma";
 enum Joint : uint8_t
 {
   YAW = 0,   // yaw_joint（MHF5005、CAN1）
-  PITCH,     // pitch_joint（DM3507、CAN1）。機構が決まるまで指令を送らない
-  ROLL,      // roll_joint（DM3507、CAN1）。同上
+  PITCH,     // pitch_joint（DM3507、CAN1）
+  ROLL,      // roll_joint。モータは無い（番号は PC 側の関節の並びと対なので残す。送らない）
   WHEEL_FR,  // right_front_wheel_joint（DM2325、CAN2）
   WHEEL_FL,  // left_front_wheel_joint
   WHEEL_BR,  // right_back_wheel_joint
@@ -111,10 +111,10 @@ inline int JointForFeedbackId(Bus bus, uint32_t id)
 constexpr size_t CAN2_JOINT_COUNT = 8;
 constexpr Joint CAN2_ORDER[CAN2_JOINT_COUNT] = {
   WHEEL_FR, LEG_FR, WHEEL_FL, LEG_FL, WHEEL_BR, LEG_BR, WHEEL_BL, LEG_BL};
-constexpr size_t CAN1_JOINT_COUNT = 3;
-constexpr Joint CAN1_ORDER[CAN1_JOINT_COUNT] = {YAW, PITCH, ROLL};
+constexpr size_t CAN1_JOINT_COUNT = 2;
+constexpr Joint CAN1_ORDER[CAN1_JOINT_COUNT] = {YAW, PITCH};  // Roll はモータが無い
 constexpr uint32_t CAN2_SLOT_US = 500;  // 8 関節 → 各 250 Hz
-constexpr uint32_t CAN1_SLOT_US = 667;  // 3 関節 → 各 500 Hz
+constexpr uint32_t CAN1_SLOT_US = 500;  // 2 関節 → 各 1000 Hz（MHF5005 が全部返すかは実機で確認。足りなければ 1000 µs）
 constexpr uint32_t DM_ENABLE_PERIOD_MS = 1000;  // DM モータへイネーブルを送る周期
 
 // --- 制御定数（設計書 4.5。実機で合わせる） ---
@@ -146,10 +146,24 @@ constexpr float LEG_TEMP_LIMIT = 80.0f;   // [℃] ロータ温度
 
 // 首 Yaw（MHF5005、LK トルク指令。beta の yaw_pd）
 constexpr float YAW_ZERO_OFFSET = 0.0f;  // [rad] エンコーダ 0 と機体前方のずれ。首の配線後に実測して入れる（beta は 240°）
-constexpr float YAW_KP = 5000.0f;
-constexpr float YAW_KD = 600.0f;
+// モータ単体（無負荷）で決めた値（2026-11-15）。beta の 5000 / 600 / 2000 は砲塔とギアが付いた状態では発振せず、
+// 単体では激しく発振した。機体に載せたら慣性に合わせて再調整する（上限はバッテリー運転で上げる）
+constexpr float YAW_KP = 50.0f;
+constexpr float YAW_KD = 5.0f;
 constexpr float YAW_GRAVITY_FF = 0.0f;
-constexpr float YAW_OUTPUT_MAX = 2000.0f;  // LK のトルク指令値（電流の LSB 単位）
+constexpr float YAW_OUTPUT_MAX = 100.0f;  // LK のトルク指令値（電流の LSB 単位 0.01 A）
+// 目標の移動速度の上限 [rad/s]。起動時 / 復電時は現在角から始めるので、目標との差が大きくても全力で突進しない
+// （2026-11-15、机上で 1 A 制限の電源が落ちた）。無限回転中の関節目標は SPIN_SPEED + CHASSIS_ROT_MAX（8 rad/s）で
+// 動くので、それより大きくしておく
+constexpr float YAW_RAMP_RATE = 10.0f;
+
+// 首 Pitch（DM3507、MIT 位置制御。beta の値）。モータのゼロは DM のツール（SaveZero）で機体の水平に合わせる。
+// 向きの符号（REP-103: 前が下がると正）は機体に載せてから確定する
+constexpr float PITCH_KP = 4.0f;    // [Nm/rad] MIT の剛性（0〜500。LSB 約 0.12）
+constexpr float PITCH_KD = 0.2f;    // [Nm s/rad] MIT の減衰（0〜5）
+constexpr float PITCH_GRAVITY_FF = 0.0f;  // [Nm] tff = PITCH_GRAVITY_FF × sin(現在角)
+constexpr float PITCH_MIN = -PI_F / 12.0f;  // [rad] 見上げ −15°（URDF の pitch_joint と対）
+constexpr float PITCH_MAX = PI_F / 6.0f;    // [rad] 見下ろし +30°
 
 // 車輪（DM2325、速度モード。beta の omni_drive）
 constexpr double WHEEL_D = 0.075;  // [m] 車輪径（φ75）
