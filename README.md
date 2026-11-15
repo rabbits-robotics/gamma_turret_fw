@@ -1,7 +1,7 @@
 # gamma_turret_fw
 
 gamma_turret 基板（M5Stack Stamp-P4 / ESP32-P4）のファームウェア。
-上位コントローラ（Jetson Orin Nano）からの UART 指令を受け、CAN 2 系統で首・車体・脚のモータを、PWM で射出 ESC を、半二重 UART で装填サーボを制御する。
+上位 PC（現在は Raspberry Pi 5）からの UART 指令を受け、CAN 2 系統で首・車体・脚のモータを、PWM で射出 ESC を、半二重 UART で装填サーボを制御する。
 通信・モータ・制御器の実装は共通ライブラリ [rabcl](https://github.com/rabbits-robotics/rabcl) に寄せて育て、beta までの資産を使い回す。
 
 > **ステータス凡例**
@@ -12,8 +12,8 @@ gamma_turret 基板（M5Stack Stamp-P4 / ESP32-P4）のファームウェア。
 ## システム構成
 
 ```
-[ Jetson Orin Nano ]
-  │ UART（3.3V TTL）
+[ 上位 PC（Raspberry Pi 5） ]
+  │ UART（USB-UART 変換 AE-FT234X 経由、3.3V TTL、921600 bps）
   ▼
 [ gamma_turret（Stamp-P4 / ESP32-P4） ]  ← BNO055 IMU（UART）
   ├── CAN1 → DM3507 × 2（首 Roll / Pitch）、MHF5005（首 Yaw）
@@ -28,7 +28,7 @@ CAN2 はスリップリング経由で車体側の受動分配基板へ届く。
 
 | 対象 | ペリフェラル | 内容 | 状態 |
 |---|---|---|---|
-| 上位コントローラ | UART（3.3V TTL） | Jetson からの指令受信、フィードバック送信 | ✅ |
+| 上位コントローラ | UART（3.3V TTL） | PC からの指令受信、フィードバック送信 | ✅ |
 | CAN1 | TWAI、MCP2562FD | 砲塔・ジンバル系（首 3 軸） | ✅ |
 | CAN2 | TWAI、MCP2562FD | 車体系（車輪 4 輪、脚 4 本） | ✅ |
 | 射出 ESC × 2 | LEDC（PWM）、50Hz | 待機 1000µs / 射出 1200µs | ✅ |
@@ -36,9 +36,9 @@ CAN2 はスリップリング経由で車体側の受動分配基板へ届く。
 | IMU | UART | BNO055（基板直載せ、UART モード）。`ImuTask`（rabcl の `BNO055UartDriver`）、100 Hz。実機確認済み（2026-11-01） | ✅ |
 | HMI | GPIO | LED × 6（電源 / デバッグ / アクティビティ）、BOOT / RESET タクト SW | ✅ |
 
-### 受信: Jetson からの指令
+### 受信: PC からの指令
 
-rabcl の共通プロトコル（下記「PC（Jetson）との通信」）。`CHASSIS_VEL`（視点基準の車体速度）、`BODY_POSE`（車高・ロール・ピッチ、カメラ座標系）、`JOINT_CMD`（首の視点目標）、`MODE`（load / fire / speed / chassis / stabilize）を受ける。操作の仕様は robot_ws/gamma の README「操作と制御の仕様」。
+rabcl の共通プロトコル（下記「PC との通信」）。`CHASSIS_VEL`（視点基準の車体速度）、`BODY_POSE`（車高・ロール・ピッチ、カメラ座標系）、`JOINT_CMD`（首の視点目標）、`MODE`（load / fire / speed / chassis / stabilize）を受ける。操作の仕様は robot_ws/gamma の README「操作と制御の仕様」。
 
 ### アクチュエータ制御
 
@@ -110,7 +110,7 @@ DAMIAO のモータは CAN_ID を 16 未満にする（説明書の推奨）。�
 - 4 本同時の中点保持（kp 1.0 / kd 0.1、各脚 250 Hz）: 原点から 0.8 rad へ約 1.6 秒で移動し、FL 0.84 / BR 0.81 / BL 0.77 rad で静止（kp 1.0 の定常偏差）。FR は 0.96 rad から戻らず（同上）
 - main タスクのスタックは 8192 B（`sdkconfig.defaults`）。既定の 3584 B では引数の多い ESP_LOGI で Stack protection fault
 
-### PC（Jetson）との通信
+### PC との通信
 
 [rabcl](https://github.com/rabbits-robotics/rabcl) の共通プロトコル（`rabcl::protocol`、設計書は rabcl の `docs/superpowers/specs/2026-10-22-robot-protocol-design.md`）を UART2（G26 TX / G27 RX、921600 bps）で流す。
 
@@ -151,7 +151,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 - 脚の安全策: フィードバックのトルクが `LEG_TORQUE_LIMIT`、ロータ温度が `LEG_TEMP_LIMIT` を超えた脚、またはモータ自身が異常コード（8〜E: 過電圧 / 過電流 / 過熱 / 過負荷など）を返した脚はディセーブルを送り続け、イネーブルも止める。`error_flags` bit0〜3（FR, FL, BR, BL）。復帰は再起動
 - 再イネーブル（電圧低下などで一度切れたあと）: その脚は今の角度を目標にし直してからランプで指令の姿勢へ戻る（段差を作らない）
 - 車輪・首 Yaw はフィードバックが来るまで指令を送らない（未配線のモータでバスを埋めない。DM へのイネーブルだけ 1 Hz で出る）
-- モータの電源断（HP 0 で 24V だけ切れ、P4 は Jetson の USB 給電で生きる）: フィードバックが `FEEDBACK_TIMEOUT_MS`（200 ms）止まった関節は「電源断」扱いにして指令を送らず、DM はイネーブル済みの印も落とす。`error_flags` bit6。復電でフィードバックが戻ると 1 Hz のイネーブルで有効になり、脚は現在角（メカストまで下がった位置）から `LEG_RAMP_RATE` で指令の姿勢へ戻る。車輪に電源が無い間は旋回速度の積分（IMU 無効時の首の基準）も止める
+- モータの電源断（HP 0 で 24V だけ切れ、P4 は上位 PC の USB 給電で生きる）: フィードバックが `FEEDBACK_TIMEOUT_MS`（200 ms）止まった関節は「電源断」扱いにして指令を送らず、DM はイネーブル済みの印も落とす。`error_flags` bit6。復電でフィードバックが戻ると 1 Hz のイネーブルで有効になり、脚は現在角（メカストまで下がった位置）から `LEG_RAMP_RATE` で指令の姿勢へ戻る。車輪に電源が無い間は旋回速度の積分（IMU 無効時の首の基準）も止める
 - 胴体の向き: IMU 有効かつ `stabilize = 1` なら IMU − 首関節角（計測時刻の首角を `ImuState.neck_yaw` で渡す）、そうでなければ旋回速度の積分（beta の yaw_ff 相当）。yaw を追うのは無限回転中だけ（普通の旋回では首は胴体と一緒に回る。`BodyAttitude::SetYawTracking`）。`error_flags` bit4 = IMU 無効
 - IMU の約束: BNO055 の融合モードは IMU（磁気なし。方位は起動時の向きが 0）。heading は時計回り正なので `yaw = WrapPi(-heading)`、pitch / roll の符号は `IMU_PITCH_SIGN / IMU_ROLL_SIGN`（実機で確定）。軸の入れ替えは BNO055 の `AXIS_MAP`（`IMU_AXIS_MAP_CONFIG / SIGN`）で行い、出力をカメラ座標系（x 前、y 左、z 上）にする。ジャイロのゼロ点は静止を検出したとき自動で合う（起動後に静止待ちはしない）。通信が途絶・エラー続き（連続 10 回）ならソフトリセットして初期化をやり直す（終端状態なし）
 - 車体速度はファーム側で `CHASSIS_VEL_MAX` / `CHASSIS_ROT_MAX` にクランプ（操作の上限は PC 側の launch）
@@ -184,13 +184,13 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 
 実機確認の手順（帰宅後、脚 4 本で）:
 
-1. 24V + USB で起動。起動時に脚が動かないこと（現在位置を保持）。`error_flags` と `JOINT_STATE` が PC に出ること（Jetson 接続前は USB-UART + ROS 2 の robot_bridge）
+1. 24V + USB で起動。起動時に脚が動かないこと（現在位置を保持）。`error_flags` と `JOINT_STATE` が PC に出ること（上位 PC を載せる前は開発 PC の USB-UART + ROS 2 の robot_bridge）
 2. `reference_command` で `body_height` を 0 → 0.5 → 1 → 0。各脚が `BodyPosture` の計算どおりに動き、ロール / ピッチで左右・前後の差が出ること — **2026-11-01 OK**（浮かせた状態。0 = 0.150、0.5 = 0.835、1 = 1.420 rad、ロール ±0.15 とピッチ ±0.15 で片側 0.345 / 反対側 1.273。詳細は `docs/2026-10-25-control-bringup-checklist.md`）
 3. 指令を止めて 0.5 s 後に途絶の扱いになり、脚が据え置き、`error_flags` の bit5 が立つこと。再開で復帰 — **2026-11-01 OK**
 4. 1 本の脚を手で押してトルク上限を超えさせ、その脚だけディセーブル（LED が変わる）になること
 5. 起動ログで esp_timer タスクのスタック残量を確認する（`CanScheduler` のコールバックで `OmniDrive::CalcVel` の double 演算が走る。足りなければ `CONFIG_ESP_TIMER_TASK_STACK_SIZE` を上げる）
 6. **IMU（BNO055 のモジュール）**: (a) ジャンパは UART モード（J3 接続・J4 接続・**J5 を完全に除去**・J2 開放）。**J3 と J5 が同時に閉じていると VOUT（2.8 V）が GND に短絡して LP5907 が発熱する**（2026-11-01 に実測。2 台がこれで止まった）。盛る前に無電源で VOUT（ピン 8）–GND が高抵抗であることを確認し、挿す前にジャンパ線給電で VOUT 2.8 V と発熱なしを確認。(b) 起動ログの `IMU:` が `RUNNING` になり `samples` が毎秒約 100 増えること（`errors` は連続エラー数、`reinits` はソフトリセット回数）— **2026-11-01 OK**（毎秒 99、60 秒で再初期化 0）。(c) 静止させて `calib` の bit5:4（ジャイロ）が 3 になるまでの時間 — **OK**（起動後数秒）。(d) 軸: カメラを前に向けた状態から、カメラを下に向ける → `pitch` が正、機体を右に傾ける → `roll` が正、上から見て左に回す → `yaw` が増える。合わなければ `IMU_AXIS_MAP_*` と `IMU_*_SIGN` を直す — **試験向きで OK**（`IMU_ROLL_SIGN = −1` に変更。本番の取り付け向きで再確認）。(e) 一定速度で回して `gyro[2]` と yaw の変化率が一致。ピッチ・ロールも振って `gyro[0]` / `gyro[1]` と roll / pitch の変化率の符号が合うこと — **試験向きで OK**（BNO055 の X 軸が左右、Y 軸が前後だったので `IMU_GYRO_INDEX` で入れ替え。時計回りで gyro[2] −0.7 rad/s、yaw も減少）。(f) 無限回転中に首が視点を保つ（`Gimbal` の経路）。(g) 起動ログで `SET_CLOCK` を抜けて `RUNNING` に進むこと（外付け水晶 true で止まるなら水晶の実装か CLK_SEL の扱いを疑う）。(h) 首を回したまま IMU を抜き差し（または安定化を切 → 入）しても砲塔が跳ばない（`AnchorImu` の経路）
-7. **24V 断 → 復電**（Jetson または PC の USB で P4 を給電したまま）: 24V を切ると 1 秒以内にログに `NO-FEEDBACK` と `MOTOR-POWER-LOST` が出て指令が止まり、戻すと脚が今の位置から静かに指令の姿勢へ戻ること（跳ねない）。`error_flags` bit6 が立って消えること
+7. **24V 断 → 復電**（上位 PC か開発 PC の USB で P4 を給電したまま）: 24V を切ると 1 秒以内にログに `NO-FEEDBACK` と `MOTOR-POWER-LOST` が出て指令が止まり、戻すと脚が今の位置から静かに指令の姿勢へ戻ること（跳ねない）。`error_flags` bit6 が立って消えること
 8. 必要なゲイン・`LEG_RAMP_RATE`・tff の値をここに記録し、`robot.hpp` を更新してからコミット — `LEG_RAMP_RATE` 4.0 と `LEG_FRICTION_BAND` 0.04 は記録済み。`LEG_KP / KD`、`LEG_LOAD_FORCE` は接地後
 9. **`MOTOR_COMMAND`**: `ros2 topic hz /motor_commands` が約 100 Hz、`ros2 topic echo /motor_commands --once` に車輪 4 つ（24V 入り）と脚 4 本（イネーブル後）が入り、脚の `position` が指令どおり（`JOINT_STATE` の `position` と同じ値へ追いつく）。rviz（`gamma.launch.py rviz:=true`）で Command（不透明）と Actual（半透明）が重なり、車高を変えると Command が先に動いて Actual が追いつく。IMU で機体を傾けると Actual の胴体だけ傾く（`ros2 param set /imu_footprint_node height_mode plane` との見え方も比べる）
 

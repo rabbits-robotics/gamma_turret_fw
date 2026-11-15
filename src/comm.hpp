@@ -1,4 +1,4 @@
-// PC（Jetson）との通信タスク。rabcl の共通プロトコル（rabcl::protocol）を SerialPort で流す。
+// PC との通信タスク。rabcl の共通プロトコル（rabcl::protocol）を SerialPort で流す。
 //   上り: 持っている関節の状態（JOINT_STATE）を 100 Hz、そのティックにモータへ送った指令（MOTOR_COMMAND）を 100 Hz、
 //         IMU は値があれば 100 Hz、INFO / SYSTEM を 1 Hz
 //   下り: CHASSIS_VEL / BODY_POSE / JOINT_CMD / MODE を受けて共有状態に置く（制御側が Get* で読む）

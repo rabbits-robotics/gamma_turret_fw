@@ -10,10 +10,10 @@
 namespace board
 {
 
-// PC（Jetson）との UART。rabcl の共通プロトコルで通信する
+// PC との UART。rabcl の共通プロトコルで通信する
 constexpr uart_port_t PC_UART_PORT = UART_NUM_2;
-constexpr gpio_num_t PC_UART_TX_PIN = GPIO_NUM_26;  // → Jetson RX（10k プルアップ）
-constexpr gpio_num_t PC_UART_RX_PIN = GPIO_NUM_27;  // ← Jetson TX
+constexpr gpio_num_t PC_UART_TX_PIN = GPIO_NUM_26;  // → PC 側（USB-UART 変換）RX（10k プルアップ）
+constexpr gpio_num_t PC_UART_RX_PIN = GPIO_NUM_27;  // ← PC 側（USB-UART 変換）TX
 constexpr uint32_t PC_UART_BAUD = 921600;
 
 // IMU（BNO055、基板直載せ、UART モード = J3 接続・J4 接続・J5 除去・J2 開放）。モジュールの送信 → G15、受信 ← G12（10k プルアップ）

@@ -1,6 +1,6 @@
 // gamma_turret_fw: 制御本体（設計書 docs/superpowers/specs/2026-10-23-gamma-control-design.md）
 //
-//   Comm          PC（Jetson）と rabcl の共通プロトコルで通信（指令の受け口、関節状態の送信）
+//   Comm          PC と rabcl の共通プロトコルで通信（指令の受け口、関節状態の送信）
 //   ImuStore      IMU の共有状態。ImuTask（BNO055、UART3、100 Hz）が書く。初期化できるまで valid = false
 //   Controller    指令・フィードバック・IMU から関節ごとの CAN 指令を作る
 //   CanScheduler  esp_timer で等間隔に 1 関節ずつ送る（CAN2: 0.5 ms × 8 = 各 250 Hz、CAN1: 0.67 ms × 3 = 各 500 Hz）
