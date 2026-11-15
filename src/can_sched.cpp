@@ -168,6 +168,10 @@ void CanReceiver::HandleFrame(const rabcl_esp32::CanFrame & frame)
       err = rabcl::Can::DMFeedbackError(frame.data);
       break;
   }
+  // DAMIAO のフィードバック先頭バイトは「CAN_ID の下位 8 bit | 状態 << 4」。CAN_ID が 16 以上（beta の 0x42〜0x46）だと
+  // 状態の上位ニブルに CAN_ID の bit4〜7 が混ざるので落とす。0 / 1（停止 / イネーブル）は正しく戻り、異常（8 以上）の判定も
+  // 効くが、異常コードの bit2 は区別できない（例: 過電圧 8 とロータ過熱 C が両方 8 に、低電圧 9 と通信途絶 D が両方 9 に見える）
+  err &= static_cast<uint8_t>(~((robot::JOINTS[joint].can_id >> 4) & 0x0F));
   if (err != last_err_[joint]) {
     if (err >= DM_ERR_FAULT_MIN) {
       ESP_LOGW(TAG, "joint %u: motor fault code 0x%X", static_cast<unsigned>(joint), err);
