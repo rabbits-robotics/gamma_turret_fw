@@ -98,6 +98,18 @@ void LogLegs(const Controller & controller)
   }
 }
 
+void LogWheels(const Controller & controller)
+{
+  for (size_t i = 0; i < 4; ++i) {
+    const auto s = controller.GetStatus(static_cast<robot::Joint>(robot::WHEEL_FR + i));
+    ESP_LOGI(TAG, "wheel %s: %s vel=%.3f target=%.3f tor=%.3f Nm t_rotor=%.0f err=%u rx=%lu%s",
+             LEG_NAMES[i], s.rx == 0 ? "NO RESPONSE" : (s.enabled ? "enabled" : "disabled"),
+             static_cast<double>(s.info.velocity_), static_cast<double>(s.target),
+             static_cast<double>(s.info.torque_), static_cast<double>(s.info.temperature_),
+             s.err, static_cast<unsigned long>(s.rx), s.stale ? " NO-FEEDBACK" : "");
+  }
+}
+
 void LogYaw(const Controller & controller)
 {
   const auto s = controller.GetStatus(robot::YAW);
@@ -210,6 +222,7 @@ extern "C" void app_main(void)
 
   while (true) {
     led3.Toggle();
+    LogWheels(controller);
     LogLegs(controller);
     LogYaw(controller);
     LogBus("CAN1", can1, sched1, rx1);
