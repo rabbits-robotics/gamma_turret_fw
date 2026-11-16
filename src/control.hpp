@@ -61,6 +61,8 @@ public:
   uint32_t error_flags() const {return error_flags_;}
   bool command_lost() const {return lost_;}
   bool motor_power_lost() const {return motor_power_lost_;}
+  // 射出 ESC に出すパルス幅 [us]（Tick が決める。制御タスクが PwmOut に書く）
+  uint32_t fire_pulse_us() const {return fire_pulse_us_;}
   float yaw_angle() const;  // 首 Yaw の関節角（最後のフィードバック）。IMU タスクが計測時刻の値として使う
   JointStatus GetStatus(robot::Joint joint) const;
 
@@ -98,6 +100,7 @@ private:
     rabcl::protocol::JointCmd pitch_cmd = {};
     bool pitch_cmd_present = false;
     bool infinite_rotation = false;
+    bool fire = false;  // 射出（MODE fire == 1。途絶中は false）
     bool lost = true;
     bool wheels_powered = false;  // 車輪のどれかからフィードバックが来ている（旋回速度の積分に使う）
     rabcl::Attitude body = {0.0f, 0.0f, 0.0f};
@@ -131,6 +134,7 @@ private:
   int64_t yaw_last_us_ = 0;     // 前回 BuildYaw がランプを進めた時刻
   rabcl::CommandWatchdog watchdog_;
 
+  uint32_t fire_pulse_us_ = robot::FIRE_IDLE_US;
   int64_t last_tick_us_ = 0;
   int64_t fed_rx_time_us_ = 0;
   int64_t last_imu_time_us_ = 0;

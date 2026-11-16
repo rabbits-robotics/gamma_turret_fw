@@ -17,6 +17,7 @@
 
 #include <rabcl_esp32/can_bus.hpp>
 #include <rabcl_esp32/debug_led.hpp>
+#include <rabcl_esp32/pwm_out.hpp>
 #include <rabcl_esp32/serial_port.hpp>
 
 #include "board.hpp"
@@ -39,6 +40,8 @@ using rabcl_esp32::CanBus;
 using rabcl_esp32::CanBusConfig;
 using rabcl_esp32::DebugLed;
 using rabcl_esp32::DebugLedConfig;
+using rabcl_esp32::PwmOut;
+using rabcl_esp32::PwmOutConfig;
 using rabcl_esp32::SerialPortConfig;
 
 CanBusConfig MakeCanConfig(gpio_num_t tx, gpio_num_t rx)
@@ -61,13 +64,24 @@ SerialPortConfig MakePcSerialConfig()
   return cfg;
 }
 
+struct ControlTaskArgs
+{
+  Controller * controller;
+  PwmOut * esc_right;
+  PwmOut * esc_left;
+};
+
 void ControlTask(void * arg)
 {
-  auto * controller = static_cast<Controller *>(arg);
+  auto * args = static_cast<ControlTaskArgs *>(arg);
   TickType_t last_wake = xTaskGetTickCount();
   while (true) {
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONTROL_TICK_MS));
-    controller->Tick(esp_timer_get_time());
+    args->controller->Tick(esp_timer_get_time());
+    // 射出 ESC: Tick が決めたパルス幅を 2 本に書く（同じ幅。途絶で待機に戻る）
+    const uint32_t fire_us = args->controller->fire_pulse_us();
+    args->esc_right->SetPulseUs(fire_us);
+    args->esc_left->SetPulseUs(fire_us);
   }
 }
 
@@ -157,7 +171,7 @@ void LogPc(const Comm & comm, const Controller & controller)
   rabcl::protocol::JointCmd pitch_cmd;
   const bool has_yaw = comm.GetJointCmd(robot::YAW, yaw_cmd);
   const bool has_pitch = comm.GetJointCmd(robot::PITCH, pitch_cmd);
-  ESP_LOGI(TAG, "PC: rx_frames=%lu crc_errors=%lu motor_cmd_frames=%lu %s error_flags=0x%02lX%s | vel %.2f %.2f %.2f | pose h=%.2f r=%.2f p=%.2f | modes %s | neck yaw=%s%.2f pitch=%s%.2f",
+  ESP_LOGI(TAG, "PC: rx_frames=%lu crc_errors=%lu motor_cmd_frames=%lu %s error_flags=0x%02lX%s | vel %.2f %.2f %.2f | pose h=%.2f r=%.2f p=%.2f | modes %s | neck yaw=%s%.2f pitch=%s%.2f | fire=%lu us",
            static_cast<unsigned long>(comm.rx_frames()), static_cast<unsigned long>(comm.crc_errors()),
            static_cast<unsigned long>(comm.motor_command_frames()),
            controller.command_lost() ? "LOST" : "ok", static_cast<unsigned long>(controller.error_flags()),
@@ -167,7 +181,8 @@ void LogPc(const Comm & comm, const Controller & controller)
            has_pose ? static_cast<double>(pose.height) : 0.0, has_pose ? static_cast<double>(pose.roll) : 0.0,
            has_pose ? static_cast<double>(pose.pitch) : 0.0, modes,
            has_yaw ? "" : "-", has_yaw ? static_cast<double>(yaw_cmd.position) : 0.0,
-           has_pitch ? "" : "-", has_pitch ? static_cast<double>(pitch_cmd.position) : 0.0);
+           has_pitch ? "" : "-", has_pitch ? static_cast<double>(pitch_cmd.position) : 0.0,
+           static_cast<unsigned long>(controller.fire_pulse_us()));
 }
 
 }  // namespace
@@ -176,6 +191,17 @@ void LogPc(const Comm & comm, const Controller & controller)
 extern "C" void app_main(void)
 {
   ESP_LOGI(TAG, "gamma_turret_fw start (reset reason: %d)", static_cast<int>(esp_reset_reason()));
+
+  // 射出 ESC: 起動直後から待機パルスを出す（アーミング。校正シーケンスは出さない。復電後に待たせない）
+  static PwmOut esc_right(PwmOutConfig{board::ESC_RIGHT_PIN, board::ESC_LEDC_TIMER, board::ESC_RIGHT_CHANNEL,
+      board::ESC_PWM_HZ, LEDC_TIMER_14_BIT, robot::FIRE_IDLE_US});
+  static PwmOut esc_left(PwmOutConfig{board::ESC_LEFT_PIN, board::ESC_LEDC_TIMER, board::ESC_LEFT_CHANNEL,
+      board::ESC_PWM_HZ, LEDC_TIMER_14_BIT, robot::FIRE_IDLE_US});
+  ESP_ERROR_CHECK(esc_right.Start());
+  ESP_ERROR_CHECK(esc_left.Start());
+  ESP_LOGI(TAG, "ESC PWM on G%d / G%d: %lu Hz, idle %lu us", static_cast<int>(board::ESC_RIGHT_PIN),
+           static_cast<int>(board::ESC_LEFT_PIN), static_cast<unsigned long>(board::ESC_PWM_HZ),
+           static_cast<unsigned long>(robot::FIRE_IDLE_US));
 
   static DebugLed led3(DebugLedConfig{board::DEBUG_LED3_PIN, true});
   ESP_ERROR_CHECK(led3.Start());
@@ -205,7 +231,8 @@ extern "C" void app_main(void)
   ESP_ERROR_CHECK(rx1.Start());
   ESP_ERROR_CHECK(rx2.Start());
 
-  if (xTaskCreate(ControlTask, "control", CONTROL_TASK_STACK, &controller, 5, nullptr) != pdPASS) {
+  static ControlTaskArgs control_args{&controller, &esc_right, &esc_left};
+  if (xTaskCreate(ControlTask, "control", CONTROL_TASK_STACK, &control_args, 5, nullptr) != pdPASS) {
     ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
   }
 

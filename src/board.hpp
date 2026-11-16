@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include <driver/gpio.h>
+#include <driver/ledc.h>
 #include <driver/uart.h>
 
 namespace board
@@ -56,6 +57,14 @@ constexpr uint32_t PITCH_CAN_ID = 0x42;  // DM3507、MIT（beta と同じ）
 constexpr uint32_t PITCH_MST_ID = 0x52;
 constexpr uint32_t ROLL_CAN_ID = 0x02;   // モータは無い（番号だけ予約。送らない）
 constexpr uint32_t ROLL_MST_ID = 0x12;
+
+// 射出 ESC × 2（Motive-RC XR-7A、BLHeli_S）。GPIO 直結の 50 Hz サーボパルス。回路図: G0 = FIRE_RIGHT_MOTOR、G1 = FIRE_LEFT_MOTOR
+constexpr gpio_num_t ESC_RIGHT_PIN = GPIO_NUM_0;
+constexpr gpio_num_t ESC_LEFT_PIN = GPIO_NUM_1;
+constexpr uint32_t ESC_PWM_HZ = 50;
+constexpr ledc_timer_t ESC_LEDC_TIMER = LEDC_TIMER_0;  // 2 本で共有
+constexpr ledc_channel_t ESC_RIGHT_CHANNEL = LEDC_CHANNEL_0;
+constexpr ledc_channel_t ESC_LEFT_CHANNEL = LEDC_CHANNEL_1;
 
 // CAN2: 車体
 constexpr uint32_t CHASSIS_CAN_ID[4] = {0x43, 0x44, 0x45, 0x46};  // DM2325、速度モード（beta と同じ）

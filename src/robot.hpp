@@ -173,6 +173,14 @@ constexpr float CHASSIS_VEL_MAX = 1.0f;  // [m/s] ファーム側の上限（操
 constexpr float CHASSIS_ROT_MAX = 3.0f;  // [rad/s]
 constexpr float SPIN_SPEED = 5.0f;       // [rad/s] 無限回転の旋回（一定。beta の最高速度）
 
+// 射出ローラー（ESC × 2、50 Hz サーボパルス）。起動直後から FIRE_IDLE_US（アーミング）。校正シーケンス（2000 → 1000 µs）は出さない:
+// BLHeli_S は範囲を保存するし、アーミング済みの ESC に 2000 µs を出すとフルスロットルになる（docs/superpowers/specs/2026-11-16-esc-pwm-design.md）
+constexpr uint32_t FIRE_IDLE_US = 1000;       // [us] 待機（BLHeli_S の既定 min 1040 未満 = ゼロスロットル）
+constexpr uint32_t FIRE_PULSE_US = 1200;      // [us] 射出（beta 実測値。gamma の実機で再調整）
+constexpr uint32_t FIRE_PULSE_MAX_US = 1800;  // [us] 通常ファームが出せる上限（校正に入る高いパルスを出さない）
+static_assert(FIRE_PULSE_US <= FIRE_PULSE_MAX_US, "fire pulse must stay below the calibration threshold");
+static_assert(FIRE_IDLE_US < FIRE_PULSE_US, "idle pulse must be below the fire pulse");
+
 // IMU（BNO055、UART）。設計書 rabcl docs/superpowers/specs/2026-10-24-bno055-uart-design.md 5.2
 // 軸の入れ替えは BNO055 の AXIS_MAP で行い、出力をカメラ座標系（x 前、y 左、z 上）にする。
 // 実機で確定するまで既定値（本番: 部品面が後ろ・USB-C が左 / 試験: 部品面が上・USB-C が右。README の手順で合わせる）

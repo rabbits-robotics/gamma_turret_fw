@@ -358,6 +358,8 @@ void Controller::Tick(int64_t now_us)
   cmd.pitch_cmd_present = comm_.GetJointCmd(robot::PITCH, cmd.pitch_cmd);
   uint8_t mode = 0;
   cmd.infinite_rotation = comm_.GetMode(robot::CHASSIS, mode) && mode == 1;
+  uint8_t fire = 0;
+  cmd.fire = comm_.GetMode(robot::FIRE, fire) && fire == 1;
   uint8_t stabilize = 1;
   comm_.GetMode(robot::STABILIZE, stabilize);
 
@@ -370,7 +372,9 @@ void Controller::Tick(int64_t now_us)
   cmd.lost = watchdog_.Expired(static_cast<float>(now_us) / 1e6f);
   if (cmd.lost) {
     cmd.infinite_rotation = false;
+    cmd.fire = false;
   }
+  fire_pulse_us_ = cmd.fire ? robot::FIRE_PULSE_US : robot::FIRE_IDLE_US;
 
   // フィードバックの鮮度: FEEDBACK_TIMEOUT_MS 止まった関節は「電源断」扱い。DM はイネーブルも落とす
   // （復電でフィードバックが戻ると 切 → 入 になり、脚は現在角から合わせ直す）

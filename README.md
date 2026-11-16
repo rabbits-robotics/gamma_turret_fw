@@ -49,11 +49,10 @@ rabcl の共通プロトコル（下記「PC との通信」）。`CHASSIS_VEL`�
 | 首 Roll 軸 | — | モータは無い（関節番号だけ残す。PC 側の `roll_joint` と対） | — |
 | 車体（CAN_CHASSIS 1〜4） | CAN2（DAMIAO） | DM2325 × 4、オムニ 4 輪（速度制御、`rabcl::OmniDrive`、視点基準 + 無限回転、各 250 Hz）。2026-11-16 浮かせて単体試験 OK、`WHEEL_SIGN` +1 で向き確定。CAN ID は beta のまま（組立後に変更） | ✅ |
 | 脚（CAN_LEG 1〜4） | CAN2（DAMIAO） | DM4310 × 4、各車輪の持ち上げ機構。`BodyPosture` → `LegDamper`（MIT、各 250 Hz） | 🔧 |
-| 射出ローラー × 2 | PWM → ESC | 50Hz サーボパルス。待機 1000µs / 射出 1200µs（beta 実測値を踏襲） | 💭 |
+| 射出ローラー × 2 | PWM → ESC | rabcl_esp32 の `PwmOut`（LEDC、50 Hz、14 bit）。G0 = 右、G1 = 左。起動直後から待機 `FIRE_IDLE_US` 1000 µs、`fire = 1` で `FIRE_PULSE_US` 1200 µs（beta 実測値、gamma で再調整）。ESC は Motive-RC XR-7A（BLHeli_S、7 A、入力 1〜2S） | 🔧 |
 | 装填 | 半二重 UART | ST3215 サーボ（rabcl の `St3215`、ステップモード）。試験モードで単体確認中、制御本体への組み込みはこれから | 🔧 |
 
-射出ローラーの ESC は beta と同じく起動時にキャリブレーションを行う（2000µs → 1000µs、各 3 秒待機）。
-射出時のパルス幅 1200µs は beta の実機調整値（2025-03 時点）。gamma でも実機で再調整する。
+射出ローラーの ESC には**起動時のキャリブレーション（2000 → 1000 µs、各 3 秒）をしない**（beta はしていた）。BLHeli_S はスロットル範囲（既定 1040〜1960 µs）を EEPROM に保存するので毎回いらないし、gamma は P4 だけがリセットされうる（PC の USB 給電）ので、アーミング済みの ESC に 2000 µs を 3 秒出すとフルスロットルになる。通常ファームは `FIRE_PULSE_MAX_US`（1800 µs）以下しか出せない（`static_assert`）。校正が要るときは BLHeli_S の手順（高いパルスを出した状態で ESC に電源）を専用ビルドで足す。射出時の 1200 µs は beta の実機調整値（2025-03、1000〜2000 に校正済みの 20 %。未校正の既定範囲なら約 17 %）で、gamma でも実機で再調整する。設計書 [docs/superpowers/specs/2026-11-16-esc-pwm-design.md](docs/superpowers/specs/2026-11-16-esc-pwm-design.md)。
 
 脚（DM4310）は各車輪を独立に持ち上げる機構を駆動し、以下の 2 機能を担う。
 
@@ -142,7 +141,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `src/imu_task.hpp` / `.cpp` | `ImuTask`。BNO055 を UART3 で読む FreeRTOS タスク。rabcl の `BNO055UartDriver`（起動シーケンス・100 Hz 読み・再初期化はバス非依存の `BNO055Sequencer`）を `SerialPort` でつなぎ、「要求の直前に受信バッファを空にする → 要求 → ヘッダ 2 バイトを読み、BB ならその長さ分を追加で読む（約 2 ms）→ 10 ms 境界で次」で回す（読み周期はこのタスクの tick だけが持つ）。BNO055 の融合更新と読みが重なると `EE 07`（bus over run）が返るので、その直後だけは 10 ms 境界を待たず即再送して位相をずらす（実機では毎秒 3〜4 回、連続はしない）。起動時に待たない（`valid = false` で始まり、初期化できた時点から使う）。落ちたら `valid = false` と `Comm::ClearImu` |
 | `src/control.hpp` / `.cpp` | `Controller`。車輪 = `OmniDrive`（視点基準、首 Yaw の角度で回す）+ 無限回転 `SPIN_SPEED`。脚 = `BodyPosture` → `LegDamper` → MIT。首 Yaw = `Gimbal`（視点目標 − 胴体の向き `BodyAttitude`）→ `PdGravityFf` → LK トルク。`Tick`（100 Hz）が Comm の指令を取り込み、`CommandWatchdog` と `BodyAttitude` を更新 |
 | `src/can_sched.hpp` / `.cpp` | `CanScheduler`（esp_timer で 1 スロット 1 関節。1 Hz の枠で DM にはイネーブル、LK にはフィードバックが無い間だけ状態読み出し 0x9C を充てる。LK は聞かれた時しか返さないので、これが無いと最初のフィードバックが来ず指令も始まらない）、`CanReceiver`（受信タスク。フィードバック ID → 関節 → `Controller::SetFeedback`、`Comm::SetJointState` は 4 回に 1 回） |
-| `src/main.cpp` | 生成と Start、1 秒ごとのログ |
+| `src/main.cpp` | 生成と Start、1 秒ごとのログ。射出 ESC の `PwmOut` × 2 は app_main の最初に Start（起動直後から待機パルス）、制御タスクが `Tick` のあと `fire_pulse_us()` を 2 本に書く |
 
 挙動:
 
@@ -155,6 +154,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 - 胴体の向き: IMU 有効かつ `stabilize = 1` なら IMU − 首関節角（計測時刻の首角を `ImuState.neck_yaw` で渡す）、そうでなければ旋回速度の積分（beta の yaw_ff 相当）。yaw を追うのは無限回転中だけ（普通の旋回では首は胴体と一緒に回る。`BodyAttitude::SetYawTracking`）。`error_flags` bit4 = IMU 無効
 - IMU の約束: BNO055 の融合モードは IMU（磁気なし。方位は起動時の向きが 0）。heading は時計回り正なので `yaw = WrapPi(-heading)`、pitch / roll の符号は `IMU_PITCH_SIGN / IMU_ROLL_SIGN`（実機で確定）。軸の入れ替えは BNO055 の `AXIS_MAP`（`IMU_AXIS_MAP_CONFIG / SIGN`）で行い、出力をカメラ座標系（x 前、y 左、z 上）にする。ジャイロのゼロ点は静止を検出したとき自動で合う（起動後に静止待ちはしない）。通信が途絶・エラー続き（連続 10 回）ならソフトリセットして初期化をやり直す（終端状態なし）
 - 車体速度はファーム側で `CHASSIS_VEL_MAX` / `CHASSIS_ROT_MAX` にクランプ（操作の上限は PC 側の launch）
+- 射出: `fire = 1`（R1）の間 `FIRE_PULSE_US`、それ以外（`fire = 0`、MODE 未受信、途絶）は `FIRE_IDLE_US`。2 本とも同じ幅。ローラーの速度段は無い（`speed` モードは車体の歩き / 走り）
 
 制御定数（`src/robot.hpp`。値は仮、実機で合わせる）:
 
@@ -176,6 +176,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `CHASSIS_VEL_MAX / ROT_MAX` | 1.0 m/s / 3.0 rad/s | ファーム側の上限 |
 | `SPIN_SPEED` | 5.0 rad/s | 無限回転の旋回（一定） |
 | `WATCHDOG_S` | 0.5 s | 途絶判定 |
+| `FIRE_IDLE_US / FIRE_PULSE_US / FIRE_PULSE_MAX_US` | 1000 / 1200 / 1800 µs | 射出 ESC の待機 / 射出 / 上限のパルス幅（50 Hz、`board.hpp` の `ESC_*`）。1200 は beta の値、実機で再調整 |
 | `FEEDBACK_TIMEOUT_MS` | 200 ms | モータのフィードバック途絶 = 電源断の判定 |
 | `IMU_AXIS_MAP_CONFIG / SIGN` | 0x24 / 0x00（試験向きで確定、2026-11-01） | BNO055 の軸入れ替え。本番（部品面が後ろ・USB-C が左）に載せたら再確定。試験向き（部品面が上・USB-C が右・USB-C を右にして座ったときの奥が前）からの計算では 0x06 / 0x07 の見込み |
 | `IMU_PITCH_SIGN / IMU_ROLL_SIGN` | +1 / **−1**（試験向きで確定） | BNO055 のオイラー角 → REP-103。前を下げて pitch +0.25 rad、右を下げて roll +0.23 rad（符号反転後） |
