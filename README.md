@@ -47,7 +47,7 @@ rabcl の共通プロトコル（下記「PC との通信」）。`CHASSIS_VEL`�
 | 首 Yaw 軸 | CAN1（LK モータ） | MHF5005。視点の安定化（`Gimbal` → 目標を `YAW_RAMP_RATE` で寄せる → `PdGravityFf` → トルク指令、1000 Hz）。単体で追従と向きを確認（2026-11-15）、ゲインとゼロ点は機体に載せてから | 🔧 |
 | 首 Pitch 軸 | CAN1（DAMIAO） | DM3507。`Gimbal` の pitch を可動角（−15°〜+30°）に収めて MIT 位置指令（1000 Hz）。単体で追従と向きを確認（2026-11-15）、ゼロ点（DMTool の原点リセット）は機体に載せてから | 🔧 |
 | 首 Roll 軸 | — | モータは無い（関節番号だけ残す。PC 側の `roll_joint` と対） | — |
-| 車体（CAN_CHASSIS 1〜4） | CAN2（DAMIAO） | DM2325 × 4、オムニ 4 輪（速度制御、`rabcl::OmniDrive`、視点基準 + 無限回転、各 250 Hz） | 🔧 |
+| 車体（CAN_CHASSIS 1〜4） | CAN2（DAMIAO） | DM2325 × 4、オムニ 4 輪（速度制御、`rabcl::OmniDrive`、視点基準 + 無限回転、各 250 Hz）。2026-11-16 浮かせて単体試験 OK、`WHEEL_SIGN` +1 で向き確定。CAN ID は beta のまま（組立後に変更） | ✅ |
 | 脚（CAN_LEG 1〜4） | CAN2（DAMIAO） | DM4310 × 4、各車輪の持ち上げ機構。`BodyPosture` → `LegDamper`（MIT、各 250 Hz） | 🔧 |
 | 射出ローラー × 2 | PWM → ESC | 50Hz サーボパルス。待機 1000µs / 射出 1200µs（beta 実測値を踏襲） | 💭 |
 | 装填 | 半二重 UART | ST3215 サーボ（rabcl の `St3215`、ステップモード）。試験モードで単体確認中、制御本体への組み込みはこれから | 🔧 |
@@ -172,7 +172,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `YAW_RAMP_RATE` | 10 rad/s | 首 Yaw の目標の移動速度。無限回転中の関節目標（`SPIN_SPEED` + `CHASSIS_ROT_MAX` = 8 rad/s）より大きくしておく |
 | `PITCH_KP / KD / GRAVITY_FF` | 4 Nm/rad / 0.2 Nm·s/rad / 0 Nm | DM3507 の MIT（beta の値）。単体で目標に追従（2026-11-15）。重力分は機体に載せてから |
 | `PITCH_MIN / MAX` | −15° / +30° | 可動角（URDF の `pitch_joint` と対）。向きは単体で確認済み、モータのゼロ（DMTool の SaveZero）は機体に載せてから |
-| `WHEEL_D / BODY_D`、`WHEEL_SIGN` | 0.075 / 0.328 m、−1 | beta の omni_drive。BODY_D は車輪の接地点の配置径（中間の車高、±2% は無視） |
+| `WHEEL_D / BODY_D`、`WHEEL_SIGN` | 0.075 / 0.328 m、+1 | beta の omni_drive（beta は −1。gamma は 1:1 ギア 1 段でモータと車輪が逆回転、2026-11-16 実機で確定）。BODY_D は車輪の接地点の配置径（中間の車高、±2% は無視） |
 | `CHASSIS_VEL_MAX / ROT_MAX` | 1.0 m/s / 3.0 rad/s | ファーム側の上限 |
 | `SPIN_SPEED` | 5.0 rad/s | 無限回転の旋回（一定） |
 | `WATCHDOG_S` | 0.5 s | 途絶判定 |

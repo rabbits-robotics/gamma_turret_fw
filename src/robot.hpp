@@ -168,7 +168,7 @@ constexpr float PITCH_MAX = PI_F / 6.0f;    // [rad] 見下ろし +30°
 // 車輪（DM2325、速度モード。beta の omni_drive）
 constexpr double WHEEL_D = 0.075;  // [m] 車輪径（φ75）
 constexpr double BODY_D = 0.328;   // [m] 車輪の接地点の配置径（= 2 × LEG_TILT_RADIUS、中間の車高。車高で ±2% 変わるのは無視）
-constexpr float WHEEL_SIGN = -1.0f;  // beta と同じ回転向き
+constexpr float WHEEL_SIGN = 1.0f;  // beta は −1。gamma は 1:1 ギア 1 段でモータと車輪が逆回転（2026-11-16 実機で確定）
 constexpr float CHASSIS_VEL_MAX = 1.0f;  // [m/s] ファーム側の上限（操作の上限は PC 側の launch）
 constexpr float CHASSIS_ROT_MAX = 3.0f;  // [rad/s]
 constexpr float SPIN_SPEED = 5.0f;       // [rad/s] 無限回転の旋回（一定。beta の最高速度）
