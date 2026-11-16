@@ -48,18 +48,18 @@ rabcl の共通プロトコル（下記「PC との通信」）。`CHASSIS_VEL`�
 | 首 Pitch 軸 | CAN1（DAMIAO） | DM3507。`Gimbal` の pitch を可動角（−15°〜+30°）に収めて MIT 位置指令（1000 Hz）。単体で追従と向きを確認（2026-11-15）、ゼロ点（DMTool の原点リセット）は機体に載せてから | 🔧 |
 | 首 Roll 軸 | — | モータは無い（関節番号だけ残す。PC 側の `roll_joint` と対） | — |
 | 車体（CAN_CHASSIS 1〜4） | CAN2（DAMIAO） | DM2325 × 4、オムニ 4 輪（速度制御、`rabcl::OmniDrive`、視点基準 + 無限回転、各 250 Hz）。2026-11-16 浮かせて単体試験 OK、`WHEEL_SIGN` +1 で向き確定。CAN ID は beta のまま（組立後に変更） | ✅ |
-| 脚（CAN_LEG 1〜4） | CAN2（DAMIAO） | DM4310 × 4、各車輪の持ち上げ機構。`BodyPosture` → `LegDamper`（MIT、各 250 Hz） | 🔧 |
+| 脚（CAN_LEG 1〜4） | CAN2（DAMIAO） | DM4310 × 4、各車輪の持ち上げ機構。`BodyPosture` → `LegDamper`（MIT、各 250 Hz）。実機で動作確認（2026-11-01）、ゲインは接地後 | 🔧 |
 | 射出ローラー × 2 | PWM → ESC | rabcl_esp32 の `PwmOut`（LEDC、50 Hz、14 bit）。G0 = 右、G1 = 左。起動直後から待機 `FIRE_IDLE_US` 1000 µs、`fire = 1` で `FIRE_PULSE_US` 1200 µs（beta 実測値、gamma で再調整）。ESC は Motive-RC XR-7A（BLHeli_S、7 A、入力 1〜2S） | 🔧 |
 | 装填 | 半二重 UART | ST3215 サーボ（rabcl の `St3215`、ステップモード）。`FeederTask` が `load` モード（L1 正転 / ○ 逆転）を rabcl の `Feeder` に通し、1 セル = 4096 ÷ 8 ÷ 3 = 170.67 カウントを実数で累積して round の差分を相対ステップで送る（171, 170, 171, …）。押した瞬間に 1 セル、押し続けると `FEED_PERIOD_MS` ごと。2026-11-16 サーボ単体で確認、メカ組立後に周期 / 速度を詰める | 🔧 |
 
-射出ローラーの ESC には**起動時のキャリブレーション（2000 → 1000 µs、各 3 秒）をしない**（beta はしていた）。BLHeli_S はスロットル範囲（既定 1040〜1960 µs）を EEPROM に保存するので毎回いらないし、gamma は P4 だけがリセットされうる（PC の USB 給電）ので、アーミング済みの ESC に 2000 µs を 3 秒出すとフルスロットルになる。通常ファームは `FIRE_PULSE_MAX_US`（1800 µs）以下しか出せない（`static_assert`）。校正が要るときは BLHeli_S の手順（高いパルスを出した状態で ESC に電源）を専用ビルドで足す。射出時の 1200 µs は beta の実機調整値（2025-03、1000〜2000 に校正済みの 20 %。未校正の既定範囲なら約 17 %）で、gamma でも実機で再調整する。設計書 [docs/superpowers/specs/2026-11-16-esc-pwm-design.md](docs/superpowers/specs/2026-11-16-esc-pwm-design.md)。
+射出ローラーの ESC には**起動時のキャリブレーション（2000 → 1000 µs、各 3 秒）をしない**（beta はしていた）。BLHeli_S はスロットル範囲（既定 1040〜1960 µs）を EEPROM に保存するので毎回いらないし、机上では P4 だけがリセットされうる（USB-C での書き込み・リセット）ので、アーミング済みの ESC に 2000 µs を 3 秒出すとフルスロットルになる。通常ファームは `FIRE_PULSE_MAX_US`（1800 µs）以下しか出せない（`static_assert`）。校正が要るときは BLHeli_S の手順（高いパルスを出した状態で ESC に電源）を専用ビルドで足す。射出時の 1200 µs は beta の実機調整値（2025-03、1000〜2000 に校正済みの 20 %。未校正の既定範囲なら約 17 %）で、gamma でも実機で再調整する。設計書 [docs/superpowers/specs/2026-11-16-esc-pwm-design.md](docs/superpowers/specs/2026-11-16-esc-pwm-design.md)。
 
 脚（DM4310）は各車輪を独立に持ち上げる機構を駆動し、以下の 2 機能を担う。
 
 | 機能 | 内容 | 状態 |
 |---|---|---|
-| アクティブダンパ | 弱い kp / kd の MIT 指令 + 荷重・摩擦分の tff（`rabcl::LegDamper`） | 🔧 |
-| 車高調整 | `BODY_POSE` の車高 0〜1 とロール・ピッチ（カメラ座標系）を `rabcl::BodyPosture` で 4 脚の目標角に変換 | 🔧 |
+| アクティブダンパ | 弱い kp / kd の MIT 指令 + 荷重・摩擦分の tff（`rabcl::LegDamper`）。実装済み、ゲインは接地後 | 🔧 |
+| 車高調整 | `BODY_POSE` の車高 0〜1 とロール・ピッチ（カメラ座標系）を `rabcl::BodyPosture` で 4 脚の目標角に変換。実装済み、接地後に実寸で確認 | 🔧 |
 | 安全策 | トルク / ロータ温度の上限超過でその脚にディセーブルを送り続け `error_flags` に立てる（復帰は再起動） | 🔧 |
 
 制御の構成は下記「制御の構成」。
@@ -217,11 +217,11 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 |---|---|---|---|
 | マイコン | STM32F303K8（Nucleo） | **ESP32-P4（M5Stack Stamp-P4）** | ✅ |
 | CAN | 1 系統（1 Mbps） | **2 系統（CAN1 = 砲塔・ジンバル、CAN2 = 車体）** | ✅ |
-| 砲塔軸 | Yaw + Pitch | **Yaw + Pitch + Roll** | ✅ |
-| 脚 | なし | **DM4310 × 4** | 🔧 |
-| 装填 | 市販 MD + DC モータ（PWM） | **ST3215 サーボ（半二重 UART）**。rabcl の `St3215` + rabcl_esp32 の `HalfDuplexSerial` | 🔧 |
+| 砲塔軸 | Yaw + Pitch | Yaw + Pitch（ロール軸は 2026-11-14 に廃止、関節番号だけ残す） | ✅ |
+| 脚 | なし | **DM4310 × 4** | ✅ |
+| 装填 | 市販 MD + DC モータ（PWM） | **ST3215 サーボ（半二重 UART）**。rabcl の `St3215` + rabcl_esp32 の `HalfDuplexSerial` | ✅ |
 | IMU | BNO055（I2C、無効化中） | **BNO055（UART）**。rabcl の `BNO055UartDriver` + `ImuTask`。実機で RUNNING・約 100 サンプル/s を確認（2026-11-01） | ✅ |
-| 開発環境 | PlatformIO + stm32pio（STM32Cube） | PlatformIO（ESP32-P4） | 🔧 |
+| 開発環境 | PlatformIO + stm32pio（STM32Cube） | PlatformIO（ESP32-P4、pioarduino） | ✅ |
 | 共通ライブラリ | rabcl（サブモジュール） | rabcl（サブモジュール、継続して拡張） | ✅ |
 
 ## 共通仕様
@@ -256,10 +256,10 @@ gamma_turret_fw 側に閉じず rabcl に追加していく。
 | 項目 | 内容 | 状態 |
 |---|---|---|
 | 既存資産 | UART パケット定義、CAN（LK MHF5005 / DAMIAO DM2325・DM3507 MIT）、`OmniDrive`、`PdGravityFf`、BNO055 | ✅ |
-| DM4310 | 脚モータ（DAMIAO）。既存の DAMIAO 実装を流用できる見込み | 💭 |
-| ST3215 | 装填サーボ（半二重 UART プロトコル） | 💭 |
+| DM4310 | 脚モータ（DAMIAO）。既存の DAMIAO MIT 実装で駆動、`LegDamper` / `BodyPosture` を追加 | ✅ |
+| ST3215 | 装填サーボ（半二重 UART プロトコル）。`St3215` + `Feeder` | ✅ |
 | BNO055 UART | rabcl に UART フレーム / バス非依存の状態機械 / UART・I2C 層を追加（2026-10-24）。実機で UART の RUNNING・約 100 サンプル/s を確認（2026-11-01）。bus over run（毎秒 3〜4 回）は即再送で吸収し、60 秒で再初期化 0 回 | ✅ |
-| ESP32 向け HAL 層 | TWAI（CAN）/ UART / LEDC（PWM）の抽象化。rabcl 側はプラットフォーム非依存に保つ | 💭 |
+| ESP32 向け HAL 層 | rabcl_esp32（TWAI / UART / 半二重 UART / LEDC `PwmOut`）。rabcl 側はプラットフォーム非依存のまま | ✅ |
 
 ## 開発環境
 
