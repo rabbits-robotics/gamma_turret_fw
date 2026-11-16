@@ -24,6 +24,7 @@
 #include "can_sched.hpp"
 #include "comm.hpp"
 #include "control.hpp"
+#include "feeder_task.hpp"
 #include "imu.hpp"
 #include "imu_task.hpp"
 #include "robot.hpp"
@@ -153,6 +154,21 @@ void LogImu(const ImuTask & task, const ImuStore & store)
            static_cast<double>(s.gyro[0]), static_cast<double>(s.gyro[1]), static_cast<double>(s.gyro[2]));
 }
 
+void LogFeeder(const FeederTask & feeder)
+{
+  const auto c = feeder.counters();
+  if (c.state == FeederTask::State::NOT_READY) {
+    ESP_LOGI(TAG, "feeder: NOT_READY mode=%u timeouts=%lu err=0x%02X", c.mode,
+             static_cast<unsigned long>(c.timeouts), c.last_error);
+    return;
+  }
+  ESP_LOGI(TAG, "feeder: READY cells=%ld sent=%ld moves=%lu fail=%lu timeouts=%lu err=0x%02X | %s remaining=%d load=%d cur=%d t=%u",
+           static_cast<long>(c.cells), static_cast<long>(c.sent_counts), static_cast<unsigned long>(c.moves),
+           static_cast<unsigned long>(c.move_fail), static_cast<unsigned long>(c.timeouts), c.last_error,
+           c.status_ok ? "status" : "NO-STATUS", c.status.position, c.status.load, c.status.current,
+           c.status.temperature);
+}
+
 void LogPc(const Comm & comm, const Controller & controller)
 {
   rabcl::protocol::ChassisVel vel;
@@ -226,6 +242,14 @@ extern "C" void app_main(void)
   ESP_LOGI(TAG, "IMU (BNO055) on UART%d: tx=G%d rx=G%d", static_cast<int>(board::IMU_UART_PORT),
            static_cast<int>(board::IMU_UART_TX_PIN), static_cast<int>(board::IMU_UART_RX_PIN));
 
+  static FeederTask feeder(controller);
+  if (feeder.Start() != ESP_OK) {
+    ESP_LOGE(TAG, "feeder task failed to start; running without the feeder");  // 装填のためにモータの起動を止めない
+  }
+  ESP_LOGI(TAG, "feeder (ST3215 id %u) on UART%d: tx=G%d rx=G%d", static_cast<unsigned>(board::SERVO_ID),
+           static_cast<int>(board::SERVO_UART_PORT), static_cast<int>(board::SERVO_UART_TX_PIN),
+           static_cast<int>(board::SERVO_UART_RX_PIN));
+
   static CanReceiver rx1(can1, robot::Bus::CAN1, controller, comm, "can1_rx");
   static CanReceiver rx2(can2, robot::Bus::CAN2, controller, comm, "can2_rx");
   ESP_ERROR_CHECK(rx1.Start());
@@ -255,6 +279,7 @@ extern "C" void app_main(void)
     LogBus("CAN1", can1, sched1, rx1);
     LogBus("CAN2", can2, sched2, rx2);
     LogPc(comm, controller);
+    LogFeeder(feeder);
     LogImu(imu_task, imu);
     vTaskDelay(pdMS_TO_TICKS(1000));
   }

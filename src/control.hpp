@@ -63,6 +63,8 @@ public:
   bool motor_power_lost() const {return motor_power_lost_;}
   // 射出 ESC に出すパルス幅 [us]（Tick が決める。制御タスクが PwmOut に書く）
   uint32_t fire_pulse_us() const {return fire_pulse_us_;}
+  // 装填のモード（0 停止 / 1 正転 / 2 逆転。途絶で 0）。FeederTask が読む
+  uint8_t load_mode() const {return load_mode_;}
   float yaw_angle() const;  // 首 Yaw の関節角（最後のフィードバック）。IMU タスクが計測時刻の値として使う
   JointStatus GetStatus(robot::Joint joint) const;
 
@@ -101,6 +103,7 @@ private:
     bool pitch_cmd_present = false;
     bool infinite_rotation = false;
     bool fire = false;  // 射出（MODE fire == 1。途絶中は false）
+    uint8_t load = 0;   // 装填（MODE load: 0 停止 / 1 正転 / 2 逆転。未受信・途絶中は 0）
     bool lost = true;
     bool wheels_powered = false;  // 車輪のどれかからフィードバックが来ている（旋回速度の積分に使う）
     rabcl::Attitude body = {0.0f, 0.0f, 0.0f};
@@ -135,6 +138,7 @@ private:
   rabcl::CommandWatchdog watchdog_;
 
   uint32_t fire_pulse_us_ = robot::FIRE_IDLE_US;
+  uint8_t load_mode_ = 0;
   int64_t last_tick_us_ = 0;
   int64_t fed_rx_time_us_ = 0;
   int64_t last_imu_time_us_ = 0;

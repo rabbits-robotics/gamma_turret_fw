@@ -181,6 +181,21 @@ constexpr uint32_t FIRE_PULSE_MAX_US = 1800;  // [us] 通常ファームが出�
 static_assert(FIRE_PULSE_US <= FIRE_PULSE_MAX_US, "fire pulse must stay below the calibration threshold");
 static_assert(FIRE_IDLE_US < FIRE_PULSE_US, "idle pulse must be below the fire pulse");
 
+// 装填（ST3215 ステップモード、トリガーホイール 8 セル、増速 3:1 = 装填側がサーボの 3 倍）。
+// 1 セル = 4096 / 8 / 3 = 170.67 カウント（非整数。rabcl::Feeder が実数で累積して round の差分を送る）。
+// 100 ms / acc 0 で 10 発/s（2026-11-16 サーボ単体で追従を確認。171 カウントを約 57 ms で動いて約 40 ms 止まる）。
+// acc 0 の行き過ぎ 22 カウント（ホイール 5.8°、許容 ±5.9°）で穴に止まるかはメカ組立後に確認。だめなら 200 ms / acc 254（行き過ぎ 3）に戻す
+constexpr float FEED_CELLS = 8.0f;
+constexpr float FEED_GEAR_RATIO = 3.0f;
+constexpr float FEED_COUNTS_PER_CELL = 4096.0f / FEED_CELLS / FEED_GEAR_RATIO;
+constexpr uint32_t FEED_PERIOD_MS = 100;          // [ms] 1 セルの最短間隔（押し続けたときの連射周期）
+constexpr uint16_t FEED_SPEED = 3000;             // [count/s] 正転の速度（ST3215 の GOAL_SPEED）
+constexpr uint16_t FEED_REVERSE_SPEED = 3000;     // [count/s] 逆転（ジャム復旧）。1500 だと 171 カウントに 114 ms かかって周期に追いつかず溜まる
+constexpr uint8_t FEED_ACC = 0;                   // 加速度（ST3215 の ACC。0 は加速制限なし）
+constexpr uint32_t FEED_RESPONSE_TIMEOUT_MS = 10;  // [ms] サーボの応答待ち
+constexpr uint32_t FEED_STATUS_PERIOD_MS = 100;   // [ms] 状態（残りステップ・負荷・電流・温度）の読み出し周期
+constexpr uint32_t FEED_FAIL_LIMIT = 5;           // 連続でこれだけ応答が無ければ NOT_READY に戻して再接続
+
 // IMU（BNO055、UART）。設計書 rabcl docs/superpowers/specs/2026-10-24-bno055-uart-design.md 5.2
 // 軸の入れ替えは BNO055 の AXIS_MAP で行い、出力をカメラ座標系（x 前、y 左、z 上）にする。
 // 実機で確定するまで既定値（本番: 部品面が後ろ・USB-C が左 / 試験: 部品面が上・USB-C が右。README の手順で合わせる）
