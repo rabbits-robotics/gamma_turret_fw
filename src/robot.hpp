@@ -195,6 +195,9 @@ constexpr uint8_t FEED_ACC = 0;                   // 加速度（ST3215 の ACC�
 constexpr uint32_t FEED_RESPONSE_TIMEOUT_MS = 10;  // [ms] サーボの応答待ち
 constexpr uint32_t FEED_STATUS_PERIOD_MS = 100;   // [ms] 状態（残りステップ・負荷・電流・温度）の読み出し周期
 constexpr uint32_t FEED_FAIL_LIMIT = 5;           // 連続でこれだけ応答が無ければ NOT_READY に戻して再接続
+// 穴の位相: サーボの絶対角（位置モードで読む）が FEED_PHASE_OFFSET + k × FEED_COUNTS_PER_CELL のときホイールの穴がストッパーに合う。
+// 2026-11-21 に組立済み機構で実測（穴に手で合わせて 3951 / 4130 / 4296 → 位相 25.7 / 34.3 / 29.3）。メカを組み替えたら測り直す
+constexpr float FEED_PHASE_OFFSET = 30.0f;        // [count]
 
 // IMU（BNO055、UART）。設計書 rabcl docs/superpowers/specs/2026-10-24-bno055-uart-design.md 5.2
 // 軸の入れ替えは BNO055 の AXIS_MAP で行い、出力をカメラ座標系（x 前、y 左、z 上）にする。

@@ -50,7 +50,7 @@ rabcl の共通プロトコル（下記「PC との通信」）。`CHASSIS_VEL`�
 | 車体（CAN_CHASSIS 1〜4） | CAN2（DAMIAO） | DM2325 × 4、オムニ 4 輪（速度制御、`rabcl::OmniDrive`、視点基準 + 無限回転、各 250 Hz）。2026-11-16 浮かせて単体試験 OK、`WHEEL_SIGN` +1 で向き確定。CAN ID は beta のまま（組立後に変更） | ✅ |
 | 脚（CAN_LEG 1〜4） | CAN2（DAMIAO） | DM4310 × 4、各車輪の持ち上げ機構。`BodyPosture` → `LegDamper`（MIT、各 250 Hz）。実機で動作確認（2026-11-01）、ゲインは接地後 | 🔧 |
 | 射出ローラー × 2 | PWM → ESC | rabcl_esp32 の `PwmOut`（LEDC、50 Hz、14 bit）。G0 = 右、G1 = 左。起動直後から待機 `FIRE_IDLE_US` 1000 µs、`fire = 1` で `FIRE_PULSE_US` 1200 µs（beta 実測値、gamma で再調整）。ESC は Motive-RC XR-7A（BLHeli_S、7 A、入力 1〜2S） | 🔧 |
-| 装填 | 半二重 UART | ST3215 サーボ（rabcl の `St3215`、ステップモード）。`FeederTask` が `load` モード（L1 正転 / ○ 逆転）を rabcl の `Feeder` に通し、1 セル = 4096 ÷ 8 ÷ 3 = 170.67 カウントを実数で累積して round の差分を相対ステップで送る（171, 170, 171, …）。押した瞬間に 1 セル、押し続けると `FEED_PERIOD_MS` ごと。2026-11-16 サーボ単体で確認、メカ組立後に周期 / 速度を詰める | 🔧 |
+| 装填 | 半二重 UART | ST3215 サーボ（rabcl の `St3215`、ステップモード）。`FeederTask` が `load` モード（L1 正転 / ○ 逆転）を rabcl の `Feeder` に通し、1 セル = 4096 ÷ 8 ÷ 3 = 170.67 カウントを実数で累積して round の差分を相対ステップで送る（171, 170, 171, …）。押した瞬間に 1 セル、押し続けると `FEED_PERIOD_MS` ごと。起動時は位置モードで絶対角を読み、一番近い穴（`FEED_PHASE_OFFSET` + k × 170.67）まで動かしてから READY（位相合わせ）。2026-11-16 サーボ単体、2026-11-21 組立済み機構（球なし）で 10 発/s の追従を確認。実弾での確認とジャム検知はこれから | 🔧 |
 
 射出ローラーの ESC には**起動時のキャリブレーション（2000 → 1000 µs、各 3 秒）をしない**（beta はしていた）。BLHeli_S はスロットル範囲（既定 1040〜1960 µs）を EEPROM に保存するので毎回いらないし、机上では P4 だけがリセットされうる（USB-C での書き込み・リセット）ので、アーミング済みの ESC に 2000 µs を 3 秒出すとフルスロットルになる。通常ファームは `FIRE_PULSE_MAX_US`（1800 µs）以下しか出せない（`static_assert`）。校正が要るときは BLHeli_S の手順（高いパルスを出した状態で ESC に電源）を専用ビルドで足す。射出時の 1200 µs は beta の実機調整値（2025-03、1000〜2000 に校正済みの 20 %。未校正の既定範囲なら約 17 %）で、gamma でも実機で再調整する。設計書 [docs/superpowers/specs/2026-11-16-esc-pwm-design.md](docs/superpowers/specs/2026-11-16-esc-pwm-design.md)。
 
@@ -141,7 +141,7 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `src/imu_task.hpp` / `.cpp` | `ImuTask`。BNO055 を UART3 で読む FreeRTOS タスク。rabcl の `BNO055UartDriver`（起動シーケンス・100 Hz 読み・再初期化はバス非依存の `BNO055Sequencer`）を `SerialPort` でつなぎ、「要求の直前に受信バッファを空にする → 要求 → ヘッダ 2 バイトを読み、BB ならその長さ分を追加で読む（約 2 ms）→ 10 ms 境界で次」で回す（読み周期はこのタスクの tick だけが持つ）。BNO055 の融合更新と読みが重なると `EE 07`（bus over run）が返るので、その直後だけは 10 ms 境界を待たず即再送して位相をずらす（実機では毎秒 3〜4 回、連続はしない）。起動時に待たない（`valid = false` で始まり、初期化できた時点から使う）。落ちたら `valid = false` と `Comm::ClearImu` |
 | `src/control.hpp` / `.cpp` | `Controller`。車輪 = `OmniDrive`（視点基準、首 Yaw の角度で回す）+ 無限回転 `SPIN_SPEED`。脚 = `BodyPosture` → `LegDamper` → MIT。首 Yaw = `Gimbal`（視点目標 − 胴体の向き `BodyAttitude`）→ `PdGravityFf` → LK トルク。`Tick`（100 Hz）が Comm の指令を取り込み、`CommandWatchdog` と `BodyAttitude` を更新 |
 | `src/can_sched.hpp` / `.cpp` | `CanScheduler`（esp_timer で 1 スロット 1 関節。1 Hz の枠で DM にはイネーブル、LK にはフィードバックが無い間だけ状態読み出し 0x9C を充てる。LK は聞かれた時しか返さないので、これが無いと最初のフィードバックが来ず指令も始まらない）、`CanReceiver`（受信タスク。フィードバック ID → 関節 → `Controller::SetFeedback`、`Comm::SetJointState` は 4 回に 1 回） |
-| `src/feeder_task.hpp` / `.cpp` | `FeederTask`。装填サーボ（ST3215）と話す FreeRTOS タスク（100 Hz）。起動時は 1 Hz で Ping → MODE が 3 か確認（EEPROM は書かない。違えば警告して待つ）→ トルク ON で READY。READY の間は `Controller::load_mode()` → rabcl `Feeder::Update` → ステップがあれば `St3215::Move`、`FEED_STATUS_PERIOD_MS` ごとに `ReadStatus`。応答失敗が `FEED_FAIL_LIMIT` 続けば NOT_READY に戻して再接続。設計書 [docs/superpowers/specs/2026-11-16-feeder-design.md](docs/superpowers/specs/2026-11-16-feeder-design.md) |
+| `src/feeder_task.hpp` / `.cpp` | `FeederTask`。装填サーボ（ST3215）と話す FreeRTOS タスク（100 Hz）。起動時は 1 Hz で Ping → MODE 0（位置）に切り替えて絶対角を読む → MODE 3（ステップ）に戻す（EEPROM 2 回）→ トルク ON → `Feeder::AlignSteps` で一番近い穴まで動かして READY。READY の間は `Controller::load_mode()` → rabcl `Feeder::Update` → ステップがあれば `St3215::Move`、`FEED_STATUS_PERIOD_MS` ごとに `ReadStatus`。応答失敗が `FEED_FAIL_LIMIT` 続けば NOT_READY に戻して再接続。設計書 [docs/superpowers/specs/2026-11-16-feeder-design.md](docs/superpowers/specs/2026-11-16-feeder-design.md)、位相合わせは [docs/superpowers/specs/2026-11-21-feeder-phase-align-design.md](docs/superpowers/specs/2026-11-21-feeder-phase-align-design.md) |
 | `src/servo_bus.hpp` / `.cpp` | `ServoBus`。rabcl の `St3215Port` を rabcl_esp32 の `HalfDuplexSerial` で実装する薄いアダプタ（UART1、G8 / G10） |
 | `src/main.cpp` | 生成と Start、1 秒ごとのログ。射出 ESC の `PwmOut` × 2 は app_main の最初に Start（起動直後から待機パルス）、制御タスクが `Tick` のあと `fire_pulse_us()` を 2 本に書く |
 
@@ -181,7 +181,8 @@ CanReceiver ×2 ──┘   （Tick 100 Hz）   └── CanScheduler CAN1（0.
 | `WATCHDOG_S` | 0.5 s | 途絶判定 |
 | `FIRE_IDLE_US / FIRE_PULSE_US / FIRE_PULSE_MAX_US` | 1000 / 1200 / 1800 µs | 射出 ESC の待機 / 射出 / 上限のパルス幅（50 Hz、`board.hpp` の `ESC_*`）。1200 は beta の値、実機で再調整 |
 | `FEED_CELLS / FEED_GEAR_RATIO` → `FEED_COUNTS_PER_CELL` | 8 / 3 → 170.67 | 装填 1 セルのサーボカウント（4096 ÷ セル数 ÷ 増速比） |
-| `FEED_PERIOD_MS`、`FEED_SPEED / FEED_REVERSE_SPEED / FEED_ACC` | 100 ms、3000 / 3000 / 0 | 連射周期（10 発/s）とステップの速度・加速度。2026-11-16 サーボ単体で追従を確認。acc 0 の行き過ぎ（22 カウント = ホイール 5.8°）で穴に止まるかはメカ組立後、だめなら 200 ms / acc 254 |
+| `FEED_PERIOD_MS`、`FEED_SPEED / FEED_REVERSE_SPEED / FEED_ACC` | 100 ms、3000 / 3000 / 0 | 連射周期（10 発/s）とステップの速度・加速度。2026-11-16 サーボ単体、2026-11-21 組立済み機構（球なし）で追従を確認（正転は残り約 60 カウントで一定、逆転は約 150 で一定、失敗 0） |
+| `FEED_PHASE_OFFSET` | 30 カウント | 穴の位相。サーボの絶対角がこの値 + k × 170.67 のとき穴がストッパーに合う。2026-11-21 に試験ビルド（`m 0` → 穴に手で合わせて `r 56 2`）で 3 点測って決めた。メカを組み替えたら測り直す |
 | `FEED_RESPONSE_TIMEOUT_MS`、`FEED_STATUS_PERIOD_MS`、`FEED_FAIL_LIMIT` | 10 ms、100 ms、5 | サーボの応答待ち、状態読み出し周期、再接続に落とす連続失敗数 |
 | `FEEDBACK_TIMEOUT_MS` | 200 ms | モータのフィードバック途絶 = 電源断の判定 |
 | `IMU_AXIS_MAP_CONFIG / SIGN` | 0x24 / 0x00（試験向きで確定、2026-11-01） | BNO055 の軸入れ替え。本番（部品面が後ろ・USB-C が左）に載せたら再確定。試験向き（部品面が上・USB-C が右・USB-C を右にして座ったときの奥が前）からの計算では 0x06 / 0x07 の見込み |

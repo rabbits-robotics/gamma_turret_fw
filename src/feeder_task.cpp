@@ -76,7 +76,8 @@ void FeederTask::Task()
           consecutive_fail_ = 0;
           taskEXIT_CRITICAL(&lock_);
           feeder_.Cancel();  // 接続前の押下は捨てる（勝手に回らない）
-          ESP_LOGI(TAG, "READY (id=%u, mode=%u, torque on)", servo_.id(), mode_);
+          ESP_LOGI(TAG, "READY (id=%u, mode was %u, torque on, pos=%ld align=%+d)", servo_.id(), mode_,
+                   static_cast<long>(align_position_), align_steps_);
         }
       }
       continue;
@@ -97,13 +98,29 @@ bool FeederTask::Connect()
   taskENTER_CRITICAL(&lock_);
   mode_ = mode;
   taskEXIT_CRITICAL(&lock_);
-  if (mode != static_cast<uint8_t>(rabcl::St3215Protocol::Mode::STEP)) {
-    // EEPROM はここでは書かない（試験モードの `m 3` で設定する）
-    ESP_LOGW(TAG, "servo mode is %u, expected %u (STEP). set it with the st3215_test build", mode,
-             static_cast<unsigned>(rabcl::St3215Protocol::Mode::STEP));
+  // 絶対角はステップモードでは読めない（トルク ON からの相対カウントしか返さない）。位置モードに切り替えて読み、戻す。
+  // トルクは切れたまま（位置モードで古い目標へ動かない）。ステップに戻せなければトルクは入れない
+  using Mode = rabcl::St3215Protocol::Mode;
+  if (!servo_.SetMode(Mode::POSITION)) {
     return false;
   }
-  return servo_.SetTorque(true);
+  rabcl::St3215Status st;
+  const bool read_ok = servo_.ReadStatus(st);
+  if (!servo_.SetMode(Mode::STEP) || !read_ok) {
+    return false;
+  }
+  if (!servo_.SetTorque(true)) {
+    return false;
+  }
+  const int16_t align = feeder_.AlignSteps(st.position, robot::FEED_PHASE_OFFSET);
+  if (align != 0 && !servo_.Move(align, robot::FEED_SPEED, robot::FEED_ACC)) {
+    return false;
+  }
+  taskENTER_CRITICAL(&lock_);
+  align_position_ = st.position;
+  align_steps_ = align;
+  taskEXIT_CRITICAL(&lock_);
+  return true;
 }
 
 void FeederTask::Drive(uint32_t now_ms)
@@ -168,6 +185,8 @@ FeederTask::Counters FeederTask::counters() const
   c.moves = moves_;
   c.move_fail = move_fail_;
   c.mode = mode_;
+  c.align_position = align_position_;
+  c.align_steps = align_steps_;
   c.status_ok = status_ok_;
   c.status = status_;
   taskEXIT_CRITICAL(&lock_);
