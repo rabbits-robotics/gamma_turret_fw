@@ -198,6 +198,15 @@ constexpr uint32_t FEED_FAIL_LIMIT = 5;           // 連続でこれだけ応答
 // 穴の位相: サーボの絶対角（位置モードで読む）が FEED_PHASE_OFFSET + k × FEED_COUNTS_PER_CELL のときホイールの穴がストッパーに合う。
 // 2026-11-21 に組立済み機構で実測（穴に手で合わせて 3951 / 4130 / 4296 → 位相 25.7 / 34.3 / 29.3）。メカを組み替えたら測り直す
 constexpr float FEED_PHASE_OFFSET = 30.0f;        // [count]
+// ジャム検知と自動復旧（docs/superpowers/specs/2026-11-21-feeder-jam-recovery-design.md）。
+// 球ありの実測（2026-11-21）: 普段は負荷 −14 % 以下・0.44 A 以下、詰まると −100 %・3.5 A
+constexpr int16_t FEED_JAM_LOAD = 800;              // [0.1 %] |負荷| がこれ以上で詰まり
+constexpr int16_t FEED_JAM_CURRENT = 308;           // [6.5 mA] = 2.0 A
+constexpr uint8_t FEED_JAM_READS = 1;               // 100 ms の読みで連続この回数（誤検知が出たら 2）
+constexpr uint8_t FEED_QUEUE_LIMIT_CELLS = 2;       // |残り| がこれを超えたら同じ向きのステップを出さない
+constexpr uint8_t FEED_RETRY_LIMIT = 3;             // 進め直しの失敗がこの回数で JAMMED
+constexpr uint32_t FEED_RECOVERY_TIMEOUT_MS = 1000;  // [ms] 戻し・進め直しの移動の待ち
+constexpr int16_t FEED_SETTLE_COUNTS = 20;          // [count] |残り| がこれ以下なら到達。静止時 ±5、球に押されていると 12〜17 残る（2026-11-21）
 
 // IMU（BNO055、UART）。設計書 rabcl docs/superpowers/specs/2026-10-24-bno055-uart-design.md 5.2
 // 軸の入れ替えは BNO055 の AXIS_MAP で行い、出力をカメラ座標系（x 前、y 左、z 上）にする。

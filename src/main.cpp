@@ -162,10 +162,12 @@ void LogFeeder(const FeederTask & feeder)
              static_cast<unsigned long>(c.timeouts), c.last_error);
     return;
   }
-  ESP_LOGI(TAG, "feeder: READY align=%+d@%ld cells=%ld sent=%ld moves=%lu fail=%lu timeouts=%lu err=0x%02X | %s remaining=%d load=%d cur=%d t=%u",
+  ESP_LOGI(TAG, "feeder: READY align=%+d@%ld cells=%ld sent=%ld moves=%lu fail=%lu jam=%s tries=%u rec=%lu jams=%lu rmoves=%lu timeouts=%lu err=0x%02X | %s remaining=%d load=%d cur=%d t=%u",
            c.align_steps, static_cast<long>(c.align_position),
            static_cast<long>(c.cells), static_cast<long>(c.sent_counts), static_cast<unsigned long>(c.moves),
-           static_cast<unsigned long>(c.move_fail), static_cast<unsigned long>(c.timeouts), c.last_error,
+           static_cast<unsigned long>(c.move_fail), FeederTask::StateName(c.jam_state), c.jam_tries,
+           static_cast<unsigned long>(c.recoveries), static_cast<unsigned long>(c.jams),
+           static_cast<unsigned long>(c.recovery_moves), static_cast<unsigned long>(c.timeouts), c.last_error,
            c.status_ok ? "status" : "NO-STATUS", c.status.position, c.status.load, c.status.current,
            c.status.temperature);
 }
